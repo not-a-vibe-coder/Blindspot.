@@ -6,6 +6,7 @@ import { FONT, itemWidth, type Item } from "./content";
 
 interface Props {
   items: Item[];
+  hidden?: boolean;
   width: number;
   height: number;
   onHover: (key: string, on: boolean) => void;
@@ -18,13 +19,15 @@ interface Props {
  * text is selectable (blue selection box over the print) and controls are real hit areas.
  */
 export const TextLayer = forwardRef<HTMLDivElement, Props>(function TextLayer(
-  { items, width, height, onHover, onAction },
+  { items, hidden, width, height, onHover, onAction },
   ref,
 ) {
   return (
     <div
       ref={ref}
       className="hero-text-layer"
+      data-hidden={hidden ? "true" : "false"}
+      aria-hidden={hidden}
       style={{ width, height, position: "absolute", left: 0, top: 0, transformOrigin: "0 0", pointerEvents: "none" }}
     >
       {items.map((it) => {

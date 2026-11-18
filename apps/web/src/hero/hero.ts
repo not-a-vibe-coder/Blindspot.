@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { computeLayout, toSlab, type HeroLayout, type Rect } from "./layout";
 import { CELL_IDS, livePattern, type CellId, type Pt } from "./cuts";
-import { centroid, glassGeometry, printGeometry, type GlassDims, type V2 } from "./geometry";
+import { centroid, glassGeometry, printGeometry, roundedShape, type GlassDims, type V2 } from "./geometry";
 import { createGlassMaterial, createGlowUniforms, GLASS, type GlowUniforms } from "./material";
 import { FONT, drawItems, navItems, panelItems, type Item } from "./content";
 import type { Quad } from "./homography";
@@ -20,7 +20,40 @@ export interface Piece {
   /** where the pointer hits this piece, in its local frame, normalised to [-1, 1] */
   tip: V2;
   halfSize: V2;
+  /** shatter path: outward+down velocity (px/s, slab space), tumble axis/angle, per-piece stagger */
+  flight: { v: THREE.Vector3; axis: THREE.Vector3; angle: number; delayOut: number; delayIn: number };
 }
+
+export type HeroMode = "gone" | "in" | "assembled" | "out";
+
+const FLIGHT_T = 0.72;
+const easeInCubic = (t: number) => t * t * t;
+const easeOutBack = (t: number) => {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+};
+const clamp01 = (t: number) => Math.min(1, Math.max(0, t));
+
+/** small deterministic PRNG so every load shatters the same way */
+function prng(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** "← Back" sliver outline in viewport fractions */
+const SLIVER: V2[] = [
+  [0.147, 0.243],
+  [0.252, 0.169],
+  [0.287, 0.277],
+  [0.151, 0.258],
+];
 
 /** k 170, c 19 — springy but settles in ~0.4 s */
 const SPRING_K = 170;
@@ -90,6 +123,8 @@ export interface HeroOptions {
   onLayout?: (panel: Item[], nav: Item[], L: HeroLayout) => void;
   /** fired every frame after the scene updates, before render */
   onFrame?: (hero: GlassHero) => void;
+  /** fired when the hero switches between assembled / flying / gone */
+  onMode?: (mode: HeroMode) => void;
 }
 
 /**
@@ -111,7 +146,19 @@ export class GlassHero {
   navSurface: PrintSurface;
   hover = new Set<string>();
   /** false while shattered / flying */
-  interactive = true;
+  interactive = false;
+  mode: HeroMode = "gone";
+  private modeT0 = 0;
+  private clock = performance.now() / 1000;
+
+  private sliver: {
+    group: THREE.Group;
+    mesh: THREE.Mesh<THREE.ExtrudeGeometry, THREE.MeshPhysicalMaterial>;
+    state: "hidden" | "growing" | "shown" | "shrinking";
+    t0: number;
+    tipX: number;
+    tipY: number;
+  } | null = null;
 
   /** pointer in viewport px; `inside` false once it leaves the window */
   readonly pointer = { x: 0, y: 0, inside: false };
@@ -169,6 +216,7 @@ export class GlassHero {
         if (this.disposed) return;
         this.resize();
         this.opts.onReady?.();
+        this.assemble(); // the page enters with the same fly-in
       });
     this.raf = requestAnimationFrame(this.frame);
   }
@@ -290,6 +338,7 @@ export class GlassHero {
         spring: { z: 0, vz: 0, rx: 0, vrx: 0, ry: 0, vry: 0 },
         tip: [0, 0],
         halfSize: [1, 1],
+        flight: this.flightFor(id, c),
       };
     } else {
       piece.mesh.geometry.dispose();
@@ -316,6 +365,167 @@ export class GlassHero {
     this.pieces = [this.shapePiece(null, "nav", this.navOutline())];
     const outlines = this.cellOutlines();
     for (const id of CELL_IDS) this.pieces.push(this.shapePiece(null, id, outlines[id]));
+    this.buildSliver();
+    this.applyFlight();
+  }
+
+  /**
+   * Each piece gets an outward + downward velocity, 420–800·S toward the camera,
+   * and 2.0–3.6 rad of tumble about a random axis. Nav leaves first.
+   */
+  private flightFor(id: PieceId, c: V2): Piece["flight"] {
+    const S = this.L.S;
+    const order = id === "nav" ? 0 : 1 + CELL_IDS.indexOf(id as CellId);
+    const r = prng(order * 7919 + 17);
+    const len = Math.hypot(c[0], c[1]) || 1;
+    const out = 520 + r() * 420;
+    const v = new THREE.Vector3(
+      (c[0] / len) * out * S * 1.4 + (r() - 0.5) * 160 * S,
+      (c[1] / len) * out * S * 0.9 - (220 + r() * 260) * S,
+      (420 + r() * 380) * S,
+    );
+    const axis = new THREE.Vector3(r() - 0.5, r() - 0.5, (r() - 0.5) * 0.6).normalize();
+    return { v, axis, angle: 2 + r() * 1.6, delayOut: order * 0.035, delayIn: order * 0.03 };
+  }
+
+  private buildSliver() {
+    if (this.sliver) {
+      this.sliver.mesh.geometry.dispose();
+      this.sliver.mesh.material.dispose();
+      this.scene.remove(this.sliver.group);
+    }
+    const { W, H } = this.L;
+    const k = W / 1918;
+    const world = SLIVER.map(([fx, fy]) => [(fx - 0.5) * W, (0.5 - fy) * H] as V2);
+    const c = centroid(world);
+    const local = world.map(([x, y]) => [x - c[0], y - c[1]] as V2);
+    const geo = new THREE.ExtrudeGeometry(roundedShape(local, 9 * k), {
+      depth: 11 * k,
+      bevelEnabled: true,
+      bevelThickness: 2.4 * k,
+      bevelSize: 1.8 * k,
+      bevelSegments: 3,
+      curveSegments: 6,
+    });
+    const mat = createGlassMaterial(null, 0.35);
+    mat.envMapIntensity = 1.7; // bright bevel
+    const mesh = new THREE.Mesh(geo, mat);
+    const group = new THREE.Group();
+    group.position.set(c[0], c[1], 40 * k);
+    group.add(mesh);
+    const prev = this.sliver;
+    group.scale.setScalar(prev && prev.state === "shown" ? 1 : 0.0001);
+    group.visible = !!prev && prev.state !== "hidden";
+    this.scene.add(group);
+    this.sliver = { group, mesh, state: prev?.state ?? "hidden", t0: prev?.t0 ?? 0, tipX: 0, tipY: 0 };
+  }
+
+  /** Send every piece flying ("How it works →"). */
+  shatter() {
+    if (this.mode !== "assembled") return;
+    this.setMode("out");
+    if (this.sliver) {
+      this.sliver.state = "growing";
+      this.sliver.t0 = this.clock;
+    }
+  }
+
+  /** Fly the pieces back (Back, and the initial page load). */
+  assemble() {
+    if (this.mode === "assembled" || this.mode === "in") return;
+    this.setMode("in");
+    if (this.sliver && this.sliver.state !== "hidden") {
+      this.sliver.state = "shrinking";
+      this.sliver.t0 = this.clock;
+    }
+  }
+
+  private setMode(m: HeroMode) {
+    this.mode = m;
+    this.modeT0 = this.clock;
+    this.interactive = m === "assembled";
+    this.opts.onMode?.(m);
+  }
+
+  /** Flight progress of a piece: 0 = in place, 1 = fully flown (can dip < 0 on the overshoot). */
+  private flightProgress(p: Piece): number {
+    const el = this.clock - this.modeT0;
+    switch (this.mode) {
+      case "assembled":
+        return 0;
+      case "gone":
+        return 1;
+      case "out":
+        return easeInCubic(clamp01((el - p.flight.delayOut) / FLIGHT_T));
+      case "in":
+        return 1 - easeOutBack(clamp01((el - p.flight.delayIn) / FLIGHT_T));
+    }
+  }
+
+  private updateMode() {
+    const el = this.clock - this.modeT0;
+    const maxDelay = 0.035 * CELL_IDS.length;
+    if (this.mode === "out" && el > FLIGHT_T + maxDelay) this.setMode("gone");
+    if (this.mode === "in" && el > FLIGHT_T + maxDelay) this.setMode("assembled");
+  }
+
+  private tmpQ = new THREE.Quaternion();
+  private tmpQ2 = new THREE.Quaternion();
+  private tmpE = new THREE.Euler();
+
+  /** Position every piece: base + flight path + hover spring. */
+  private applyFlight() {
+    const g = 1800 * this.L.S;
+    for (const p of this.pieces) {
+      const s = this.flightProgress(p);
+      const t = s * FLIGHT_T;
+      const { v, axis, angle } = p.flight;
+      p.group.position.set(p.base[0] + v.x * t, p.base[1] + v.y * t - 0.5 * g * t * t, p.spring.z + v.z * t);
+      this.tmpQ.setFromAxisAngle(axis, angle * s);
+      this.tmpQ2.setFromEuler(this.tmpE.set(p.spring.rx, p.spring.ry, 0));
+      p.group.quaternion.copy(this.tmpQ).multiply(this.tmpQ2);
+      p.group.visible = this.mode !== "gone";
+    }
+  }
+
+  /** The "← Back" sliver: grows in .3 s after the shatter, idles with a wobble, tips toward the pointer. */
+  private updateSliver(dt: number) {
+    const sl = this.sliver;
+    if (!sl) return;
+    const el = this.clock - sl.t0;
+    let scale = 0;
+    if (sl.state === "growing") {
+      scale = easeOutBack(clamp01((el - 0.3) / 0.45));
+      if (el > 0.75) sl.state = "shown";
+    } else if (sl.state === "shown") scale = 1;
+    else if (sl.state === "shrinking") {
+      scale = 1 - easeInCubic(clamp01(el / 0.3));
+      if (el > 0.3) sl.state = "hidden";
+    }
+    sl.group.visible = scale > 0.001;
+    sl.group.scale.setScalar(Math.max(scale, 0.0001));
+    if (!sl.group.visible) return;
+
+    // hover tip toward the pointer (up to .14 rad)
+    let tx = 0;
+    let ty = 0;
+    if (this.pointer.inside) {
+      this.ndc.set((this.pointer.x / this.L.W) * 2 - 1, -(this.pointer.y / this.L.H) * 2 + 1);
+      this.raycaster.setFromCamera(this.ndc, this.camera);
+      const hit = this.raycaster.intersectObject(sl.mesh, false)[0];
+      if (hit) {
+        const local = sl.group.worldToLocal(hit.point.clone());
+        sl.mesh.geometry.computeBoundingBox();
+        const bb = sl.mesh.geometry.boundingBox!;
+        tx = THREE.MathUtils.clamp(local.x / ((bb.max.x - bb.min.x) / 2), -1, 1);
+        ty = THREE.MathUtils.clamp(local.y / ((bb.max.y - bb.min.y) / 2), -1, 1);
+      }
+    }
+    const k = 1 - Math.exp(-dt / 0.12);
+    sl.tipX += (-ty * 0.14 - sl.tipX) * k;
+    sl.tipY += (tx * 0.14 - sl.tipY) * k;
+    const w = this.clock * Math.PI * 2;
+    sl.group.rotation.set(0.08 + 0.03 * Math.sin(w * 0.9) + sl.tipX, -0.16 + 0.04 * Math.sin(w * 1.1 + 1.3) + sl.tipY, 0);
   }
 
   /** Swap in fresh cell geometry for the current pattern (~45×/s). */
@@ -350,6 +560,9 @@ export class GlassHero {
     if (this.disposed) return;
     const dt = Math.min((now - (this.last || now)) / 1000, 1 / 20);
     this.last = now;
+    // timelines (fly-in, shatter, sliver) run on wall-clock time so a slow frame rate
+    // never stretches them; springs and smoothing use the capped dt
+    this.clock = now / 1000;
     this.update(dt);
     this.opts.onFrame?.(this);
     this.renderer.render(this.scene, this.camera);
@@ -358,6 +571,7 @@ export class GlassHero {
 
   protected update(dt: number) {
     this.time += dt;
+    this.updateMode();
     this.presence += ((this.pointer.inside ? 1 : 0) - this.presence) * (1 - Math.exp(-dt / 0.25));
 
     this.rebuildAcc += dt;
@@ -370,6 +584,8 @@ export class GlassHero {
     this.slab.updateMatrixWorld(true);
     this.updateHover();
     this.updatePieces(dt);
+    this.applyFlight();
+    this.updateSliver(dt);
   }
 
   /**
@@ -428,8 +644,6 @@ export class GlassHero {
       [s.ry, s.vry] = spring(s.ry, s.vry, on ? p.tip[0] * TIP_MAX : 0, dt);
       [s.rx, s.vrx] = spring(s.rx, s.vrx, on ? -p.tip[1] * TIP_MAX : 0, dt);
 
-      p.group.position.z = s.z;
-      p.group.rotation.set(s.rx, s.ry, 0);
 
       // sheen: iridescence .55 → 1.0 and envMapIntensity 1 → 1.9 while hovered
       const h = THREE.MathUtils.clamp(s.z / lift, 0, 1);
@@ -449,6 +663,10 @@ export class GlassHero {
       p.mesh.geometry.dispose();
       p.mesh.material.dispose();
       p.print.geometry.dispose();
+    }
+    if (this.sliver) {
+      this.sliver.mesh.geometry.dispose();
+      this.sliver.mesh.material.dispose();
     }
     this.panelSurface.dispose();
     this.navSurface.dispose();

@@ -355,3 +355,105 @@ body {
     transform: none !important;
   }
 }
+
+/* ───────────────────────── landing hero overlays ───────────────────────── */
+
+.hero-text-layer ::selection {
+  background: rgba(74, 134, 255, 0.45);
+  color: transparent;
+}
+
+.hero-text-layer {
+  transition: opacity 0.18s ease;
+}
+
+.hero-text-layer[data-hidden="true"] {
+  opacity: 0;
+  pointer-events: none !important;
+}
+
+.hero-text-layer[data-hidden="true"] * {
+  pointer-events: none !important;
+}
+
+/* definitions: fade in from .28 s over .4 s; out in .25 s */
+.hero-definitions {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.hero-definitions[data-visible="true"] {
+  opacity: 1;
+  transition: opacity 0.4s ease 0.28s;
+}
+
+.hero-terms {
+  position: absolute;
+  left: 32.4vw;
+  width: 33.9vw;
+  /* title baseline at 35.9% H */
+  top: calc(35.9vh - 1.36vw * 0.98);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.73vw;
+  line-height: 1.72;
+}
+
+.hero-terms h2 {
+  font-weight: 650;
+  font-size: 1.36vw;
+  letter-spacing: -0.022em;
+  line-height: 1.2;
+  color: #fff;
+  margin-bottom: 1.05vw;
+}
+
+.hero-terms p + p {
+  margin-top: 1.05vw;
+}
+
+.hero-terms b {
+  color: #fff;
+  font-weight: 600;
+}
+
+/* "← Back" label centred on the WebGL sliver at (.219W, .238H) */
+.hero-back {
+  position: absolute;
+  left: 21.9vw;
+  top: 23.8vh;
+  transform: translate(-50%, -50%) rotate(-3deg);
+  padding: 1.2vw 2.6vw;
+  font-size: 0.66vw;
+  font-weight: 500;
+  color: #fff;
+  background: none;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.hero-back:hover,
+.hero-back:focus-visible {
+  color: #b9abff;
+  outline: none;
+}
+
+@media (max-width: 900px) {
+  .hero-terms {
+    left: 8vw;
+    width: 84vw;
+    top: 34vh;
+    font-size: 13px;
+  }
+  .hero-terms h2 {
+    font-size: 22px;
+    margin-bottom: 14px;
+  }
+  .hero-terms p + p {
+    margin-top: 12px;
+  }
+  .hero-back {
+    font-size: 12px;
+  }
+}
