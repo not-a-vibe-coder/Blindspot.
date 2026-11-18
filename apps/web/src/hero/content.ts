@@ -148,10 +148,15 @@ function setFont(ctx: CanvasRenderingContext2D, it: Item) {
   if ("letterSpacing" in ctx) (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${it.tracking * it.size}px`;
 }
 
-/** Baseline of line i inside its line box (Inter's ascender/descender split, ~0.77/0.23). */
+/**
+ * Baseline of line i inside its CSS line box, using Inter's hhea metrics
+ * (ascender 1984/2048, descender 496/2048), so canvas print and DOM text agree.
+ */
+const INTER_ASC = 1984 / 2048;
+const INTER_DESC = 496 / 2048;
 function baseline(it: Item, i: number): number {
   const box = it.size * it.leading;
-  return it.y + i * box + (box - it.size) / 2 + it.size * 0.8;
+  return it.y + i * box + box / 2 + ((INTER_ASC - INTER_DESC) / 2) * it.size;
 }
 
 export function drawItems(
@@ -176,7 +181,7 @@ export function drawItems(
       ctx.fill();
       ctx.fillStyle = "#0a0a0c";
       const tw = measure(it.lines[0]!, it.size, it.weight, it.tracking);
-      ctx.fillText(it.lines[0]!, it.x + (it.w! - tw) / 2, it.y + it.h! / 2 + it.size * 0.35);
+      ctx.fillText(it.lines[0]!, it.x + (it.w! - tw) / 2, it.y + it.h! / 2 + ((INTER_ASC - INTER_DESC) / 2) * it.size);
     } else {
       if (it.kind === "headline") {
         const top = it.y;

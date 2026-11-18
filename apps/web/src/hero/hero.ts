@@ -5,6 +5,7 @@ import { CELL_IDS, livePattern, type CellId, type Pt } from "./cuts";
 import { centroid, glassGeometry, printGeometry, type GlassDims, type V2 } from "./geometry";
 import { createGlassMaterial, createGlowUniforms, type GlowUniforms } from "./material";
 import { FONT, drawItems, navItems, panelItems, type Item } from "./content";
+import type { Quad } from "./homography";
 
 export type PieceId = CellId | "nav";
 
@@ -64,6 +65,10 @@ class PrintSurface {
 
 export interface HeroOptions {
   onReady?: () => void;
+  /** fired after every layout with the items printed on each surface (drives the DOM text layer) */
+  onLayout?: (panel: Item[], nav: Item[], L: HeroLayout) => void;
+  /** fired every frame after the scene updates, before render */
+  onFrame?: (hero: GlassHero) => void;
 }
 
 /**
@@ -162,7 +167,24 @@ export class GlassHero {
     this.panelSurface.draw(this.hover);
     this.navSurface.draw(this.hover);
     this.build();
+    this.opts.onLayout?.(this.panelSurface.items, this.navSurface.items, this.L);
   };
+
+  /**
+   * Screen-space corners (tl, tr, bl, br) of a print surface on the glass's top face,
+   * through the slab's current tilt — used to map the DOM text layer with matrix3d.
+   */
+  surfaceQuad(which: "panel" | "nav"): Quad {
+    const r = which === "panel" ? this.L.panel : this.L.nav;
+    const z = this.dims.depth + this.dims.bevel + 0.3;
+    const v = new THREE.Vector3();
+    const proj = (x: number, y: number): [number, number] => {
+      const [sx, sy] = toSlab(this.L, x, y);
+      v.set(sx, sy, z).applyMatrix4(this.slab.matrixWorld).project(this.camera);
+      return [((v.x + 1) / 2) * this.L.W, ((1 - v.y) / 2) * this.L.H];
+    };
+    return [proj(r.x, r.y), proj(r.x + r.w, r.y), proj(r.x, r.y + r.h), proj(r.x + r.w, r.y + r.h)];
+  }
 
   /** panel-normalised point → slab space */
   panelToSlab(p: Pt): V2 {
@@ -290,6 +312,8 @@ export class GlassHero {
     const dt = Math.min((now - (this.last || now)) / 1000, 1 / 20);
     this.last = now;
     this.update(dt);
+    this.scene.updateMatrixWorld();
+    this.opts.onFrame?.(this);
     this.renderer.render(this.scene, this.camera);
     this.raf = requestAnimationFrame(this.frame);
   };
