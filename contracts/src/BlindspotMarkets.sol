@@ -56,6 +56,15 @@ contract BlindspotMarkets {
         bool viaCouncil; // true if the ML-DSA-87 council signed it
     }
 
+    /// @dev UMA-style optimistic proposal. Undisputed for LIVENESS => final.
+    struct Proposal {
+        Outcome outcome;
+        address proposer;
+        uint64 proposedAt;
+        address disputer;
+        uint128 bond; // each side posts this much
+    }
+
     /// @dev What the world can see: how much is in, never which way — until reveal.
     struct Pool {
         uint128 totalStaked;
@@ -78,12 +87,15 @@ contract BlindspotMarkets {
 
     uint256 public constant MIN_REVEAL_WINDOW = 10 minutes;
     uint256 public constant MAX_FEE_BPS = 500; // 5%
+    uint64 public constant LIVENESS = 2 hours;
 
     // ───────────────────────────── Storage ────────────────────────────
 
     address public owner;
     address public treasury;
     uint16 public feeBps;
+    uint128 public proposalBond = 0.1 ether;
+    uint256 private _lock = 1;
 
     uint256 public marketCount;
     mapping(uint256 => Market) internal _markets;
@@ -93,6 +105,9 @@ contract BlindspotMarkets {
     /// @notice True once the sealer's ML-KEM secret key is public (keyper release).
     mapping(uint256 => bool) public sealerKeyReleased;
     mapping(uint256 => Resolution) internal _resolutions;
+    mapping(uint256 => Proposal) internal _proposals;
+    /// @notice Pull-payment balances (bond refunds and rewards).
+    mapping(address => uint256) public credits;
 
     // ───────────────────────────── Events ─────────────────────────────
 
@@ -119,6 +134,10 @@ contract BlindspotMarkets {
     event SealerKeyReleased(uint256 indexed marketId, bytes secretKey);
     event BetRevealed(uint256 indexed marketId, uint256 indexed betId, Side side);
     event MarketResolved(uint256 indexed marketId, Outcome outcome, bool viaCouncil);
+    event OutcomeProposed(uint256 indexed marketId, address indexed proposer, Outcome outcome, uint128 bond);
+    event OutcomeDisputed(uint256 indexed marketId, address indexed disputer);
+    event CreditsWithdrawn(address indexed account, uint256 amount);
+    event ProposalBondUpdated(uint128 bond);
     event FeeConfigUpdated(address treasury, uint16 feeBps);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -147,6 +166,22 @@ contract BlindspotMarkets {
     error InvalidOutcome();
     error WrongCouncilKey();
     error BadCouncilSignature();
+    error ProposalExists();
+    error NoProposal();
+    error AlreadyDisputed();
+    error LivenessOver();
+    error WrongBond();
+    error NotSettleable();
+    error NothingToWithdraw();
+    error TransferFailed();
+    error Reentrancy();
+
+    modifier nonReentrant() {
+        if (_lock != 1) revert Reentrancy();
+        _lock = 2;
+        _;
+        _lock = 1;
+    }
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -315,6 +350,71 @@ contract BlindspotMarkets {
             revert BadCouncilSignature();
         }
         _finalize(marketId, outcome, true);
+        _settleBondsAfterCouncil(marketId, outcome);
+    }
+
+    // ───────────────────── Optimistic oracle (UMA-style) ───────────────
+
+    /// @notice Propose the outcome with a bond. If nobody disputes within LIVENESS it becomes final.
+    function proposeOutcome(uint256 marketId, Outcome outcome) external payable {
+        Market storage m = _market(marketId);
+        _requireResolvable(marketId, m);
+        if (outcome == Outcome.Unresolved) revert InvalidOutcome();
+        if (block.timestamp + LIVENESS > m.resolveDeadline) revert ResolutionExpired();
+        Proposal storage p = _proposals[marketId];
+        if (p.proposer != address(0)) revert ProposalExists();
+        if (msg.value != proposalBond) revert WrongBond();
+
+        _proposals[marketId] = Proposal({
+            outcome: outcome,
+            proposer: msg.sender,
+            proposedAt: uint64(block.timestamp),
+            disputer: address(0),
+            bond: uint128(msg.value)
+        });
+        emit OutcomeProposed(marketId, msg.sender, outcome, uint128(msg.value));
+    }
+
+    /// @notice Dispute a proposal by matching its bond. Escalates the market to the PQ council:
+    ///         whoever the council agrees with takes both bonds.
+    function disputeOutcome(uint256 marketId) external payable {
+        _market(marketId);
+        if (_resolutions[marketId].outcome != Outcome.Unresolved) revert AlreadyResolved();
+        Proposal storage p = _proposals[marketId];
+        if (p.proposer == address(0)) revert NoProposal();
+        if (p.disputer != address(0)) revert AlreadyDisputed();
+        if (block.timestamp >= p.proposedAt + LIVENESS) revert LivenessOver();
+        if (msg.value != p.bond) revert WrongBond();
+
+        p.disputer = msg.sender;
+        emit OutcomeDisputed(marketId, msg.sender);
+    }
+
+    /// @notice Finalize an undisputed proposal after LIVENESS, or mark the market Invalid once
+    ///         the resolve deadline passes with nothing final (all bonds refunded).
+    function settle(uint256 marketId) public {
+        Market storage m = _market(marketId);
+        if (_resolutions[marketId].outcome != Outcome.Unresolved) revert AlreadyResolved();
+        Proposal storage p = _proposals[marketId];
+
+        if (p.proposer != address(0) && p.disputer == address(0) && block.timestamp >= p.proposedAt + LIVENESS) {
+            _finalize(marketId, p.outcome, false);
+            credits[p.proposer] += p.bond;
+        } else if (block.timestamp >= m.resolveDeadline) {
+            _finalize(marketId, Outcome.Invalid, false);
+            if (p.proposer != address(0)) credits[p.proposer] += p.bond;
+            if (p.disputer != address(0)) credits[p.disputer] += p.bond;
+        } else {
+            revert NotSettleable();
+        }
+    }
+
+    function withdrawCredits() external nonReentrant {
+        uint256 amount = credits[msg.sender];
+        if (amount == 0) revert NothingToWithdraw();
+        credits[msg.sender] = 0;
+        _send(msg.sender, amount);
+        emit CreditsWithdrawn(msg.sender, amount);
     }
 
     /// @notice Exact bytes the council signs. Domain-separated by chain, contract and market so a
@@ -328,6 +428,11 @@ contract BlindspotMarkets {
     function getResolution(uint256 marketId) external view returns (Resolution memory) {
         _market(marketId);
         return _resolutions[marketId];
+    }
+
+    function getProposal(uint256 marketId) external view returns (Proposal memory) {
+        _market(marketId);
+        return _proposals[marketId];
     }
 
     function getMarket(uint256 marketId) external view returns (Market memory) {
@@ -353,6 +458,11 @@ contract BlindspotMarkets {
         emit FeeConfigUpdated(treasury_, feeBps_);
     }
 
+    function setProposalBond(uint128 bond) external onlyOwner {
+        proposalBond = bond;
+        emit ProposalBondUpdated(bond);
+    }
+
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert InvalidAddress();
         emit OwnershipTransferred(owner, newOwner);
@@ -375,6 +485,24 @@ contract BlindspotMarkets {
     function _finalize(uint256 marketId, Outcome outcome, bool viaCouncil) internal {
         _resolutions[marketId] = Resolution({outcome: outcome, viaCouncil: viaCouncil});
         emit MarketResolved(marketId, outcome, viaCouncil);
+    }
+
+    /// @dev Disputed: whoever the council agrees with takes both bonds.
+    ///      Undisputed: a correct proposer is refunded, a wrong one is slashed to the treasury.
+    function _settleBondsAfterCouncil(uint256 marketId, Outcome outcome) internal {
+        Proposal storage p = _proposals[marketId];
+        if (p.proposer == address(0)) return;
+        bool proposerRight = p.outcome == outcome;
+        if (p.disputer != address(0)) {
+            credits[proposerRight ? p.proposer : p.disputer] += uint256(p.bond) * 2;
+        } else {
+            credits[proposerRight ? p.proposer : treasury] += p.bond;
+        }
+    }
+
+    function _send(address to, uint256 amount) internal {
+        (bool ok,) = to.call{value: amount}("");
+        if (!ok) revert TransferFailed();
     }
 
     function _requireRevealWindow(Market storage m) internal view {
