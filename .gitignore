@@ -12,3 +12,4 @@ contracts/broadcast/*/31337/
 # secrets
 *.keystore.json
 services/sealer/keys/
+contracts/deployments/31337.json
