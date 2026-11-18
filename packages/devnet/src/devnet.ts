@@ -123,6 +123,18 @@ async function up() {
     JSON.stringify({ BlindspotMarkets: address, chainId: 31337, deployedAtBlock: 0, feeBps: 200, treasury: deployer.account.address }, null, 2),
   );
   log(`BlindspotMarkets ${address}`);
+  // point the web app at this devnet
+  writeFileSync(
+    resolve(ROOT, "apps/web/.env.local"),
+    [
+      "# written by pnpm devnet",
+      "NEXT_PUBLIC_CHAIN_ID=31337",
+      `NEXT_PUBLIC_RPC_URL=${RPC}`,
+      `NEXT_PUBLIC_BLINDSPOT_ADDRESS=${address}`,
+      "NEXT_PUBLIC_FROM_BLOCK=0",
+      "",
+    ].join("\n"),
+  );
   log(`MockPQCVerify    ${mockAddress} (code also at ${PQC})`);
 
   // council + keyper
