@@ -76,6 +76,8 @@ contract BlindspotMarkets {
     mapping(uint256 => string) public question;
     mapping(uint256 => Pool) internal _pools;
     mapping(uint256 => mapping(uint256 => Bet)) internal _bets;
+    /// @notice True once the sealer's ML-KEM secret key is public (keyper release).
+    mapping(uint256 => bool) public sealerKeyReleased;
 
     // ───────────────────────────── Events ─────────────────────────────
 
@@ -98,6 +100,9 @@ contract BlindspotMarkets {
         bytes32 commitment,
         bytes sealedSide
     );
+    /// @dev Once emitted, anyone can decrypt every sealed side in this market and verify the reveals.
+    event SealerKeyReleased(uint256 indexed marketId, bytes secretKey);
+    event BetRevealed(uint256 indexed marketId, uint256 indexed betId, Side side);
     event FeeConfigUpdated(address treasury, uint16 feeBps);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -115,6 +120,11 @@ contract BlindspotMarkets {
     error InvalidCommitment();
     error InvalidSealedSide();
     error UnknownBet();
+    error NotInRevealWindow();
+    error KeyAlreadyReleased();
+    error WrongSealerKey();
+    error LengthMismatch();
+    error InvalidReveal(uint256 betId);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -215,6 +225,54 @@ contract BlindspotMarkets {
         return keccak256(abi.encode(block.chainid, address(this), marketId, bettor, side, salt));
     }
 
+    // ───────────────────────── Keyper release + reveal ─────────────────
+
+    /// @notice Release the market's ML-KEM-1024 secret key after close (Shutter-style keyper).
+    ///         Anyone may submit it — the hash committed at creation proves it's the right key,
+    ///         and once it's public every sealed side can be decrypted and checked by anyone.
+    function releaseSealerKey(uint256 marketId, bytes calldata secretKey) external {
+        Market storage m = _market(marketId);
+        _requireRevealWindow(m);
+        if (sealerKeyReleased[marketId]) revert KeyAlreadyReleased();
+        if (secretKey.length != MLKEM1024_SECRETKEY_LEN || keccak256(secretKey) != m.sealerKeyHash) {
+            revert WrongSealerKey();
+        }
+        sealerKeyReleased[marketId] = true;
+        emit SealerKeyReleased(marketId, secretKey);
+    }
+
+    /// @notice Open sealed bets by proving (side, salt) against each commitment. Permissionless:
+    ///         the sealer batch-reveals everything, and bettors can always self-reveal with their salt.
+    ///         Already-revealed bets are skipped so overlapping batches never brick each other.
+    function revealBets(
+        uint256 marketId,
+        uint256[] calldata betIds,
+        Side[] calldata sides,
+        bytes32[] calldata salts
+    ) external {
+        Market storage m = _market(marketId);
+        _requireRevealWindow(m);
+        if (betIds.length != sides.length || betIds.length != salts.length) revert LengthMismatch();
+
+        Pool storage p = _pools[marketId];
+        for (uint256 i; i < betIds.length; ++i) {
+            Bet storage b = _bet(marketId, betIds[i]);
+            if (b.side != Side.Hidden) continue;
+
+            Side side = sides[i];
+            if (side == Side.Hidden) revert InvalidReveal(betIds[i]);
+            if (commitmentFor(marketId, b.bettor, side, salts[i]) != b.commitment) {
+                revert InvalidReveal(betIds[i]);
+            }
+
+            b.side = side;
+            if (side == Side.Yes) p.revealedYes += b.amount;
+            else p.revealedNo += b.amount;
+            ++p.revealedCount;
+            emit BetRevealed(marketId, betIds[i], side);
+        }
+    }
+
     // ─────────────────────────────── Views ────────────────────────────
 
     function getMarket(uint256 marketId) external view returns (Market memory) {
@@ -251,6 +309,10 @@ contract BlindspotMarkets {
     function _market(uint256 marketId) internal view returns (Market storage m) {
         m = _markets[marketId];
         if (m.creator == address(0)) revert UnknownMarket();
+    }
+
+    function _requireRevealWindow(Market storage m) internal view {
+        if (block.timestamp < m.closeTime || block.timestamp >= m.revealDeadline) revert NotInRevealWindow();
     }
 
     function _bet(uint256 marketId, uint256 betId) internal view returns (Bet storage b) {
