@@ -135,6 +135,17 @@ export class BlindspotClient {
     return (logs[0]?.args as { secretKey: Hex } | undefined)?.secretKey;
   }
 
+  /** Bet ids already revealed on-chain. */
+  async getRevealedBetIds(marketId: bigint, fromBlock?: bigint): Promise<Set<bigint>> {
+    const logs = await this.scan("BetRevealed", { marketId }, fromBlock);
+    return new Set(logs.map((l) => (l.args as { betId: bigint }).betId));
+  }
+
+  /** Latest block timestamp — keepers act on chain time, not wall-clock time. */
+  async chainTime(): Promise<bigint> {
+    return (await this.publicClient.getBlock({ blockTag: "latest" })).timestamp;
+  }
+
   /** Once the key is public, anyone can decrypt every bet and audit the reveals. */
   async decryptAll(marketId: bigint, secretKey: Hex): Promise<{ bet: SealedBet; reveal?: Reveal; error?: string }[]> {
     const ctx = await this.sealContext(marketId);
