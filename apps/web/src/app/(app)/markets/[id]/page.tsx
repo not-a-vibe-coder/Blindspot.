@@ -91,7 +91,7 @@ export default function MarketPage() {
                   </span>
                 </div>
                 {phase === "settled" && outcome !== Outcome.Invalid && (
-                  <p className="mt-3 text-[12px] text-white/40">Winners split the losing pool pro rata, minus a 2% fee on the losing side.</p>
+                  <p className="mt-3 text-[12px] text-white/40">Winners split the losing pool pro rata, minus the protocol fee on the losing side.</p>
                 )}
               </>
             ) : (
