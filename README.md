@@ -45,6 +45,7 @@ Built on **QoreChain** — testnet `qorechain-diana`, EVM lane chain id **9800**
 ## Repo layout
 
 ```
+apps/web/           Next.js frontend — WebGL smoked-glass landing + markets, market, portfolio pages
 contracts/          Foundry — BlindspotMarkets.sol, QorePQC precompile wrapper, 58 tests (incl. solvency fuzz)
 packages/sdk/       TypeScript SDK — chains, ABI, ML-KEM sealing, ML-DSA signing, BlindspotClient
 packages/devnet/    one-command local chain with seeded sealed markets + running keyper
@@ -61,7 +62,12 @@ pnpm install
 cd contracts && forge build && cd ..
 pnpm test            # contracts + sdk + services
 pnpm devnet          # anvil :8545, deploy, 4 seeded markets, 12 sealed bets, keyper loop
+                     # (also writes apps/web/.env.local)
+pnpm --filter @blindspot/web dev     # http://localhost:3000
 ```
+
+Import an Anvil dev key into your wallet (e.g. `0x59c6995e…690d`) and add the network
+`http://127.0.0.1:8545`, chain id 31337 — the app offers to add it for you.
 
 In a second terminal:
 
@@ -71,30 +77,80 @@ pnpm devnet resolve 2 no     # council resolves (mock ML-DSA on anvil)
 pnpm devnet warp 1h          # reveal window over → winners can claim
 ```
 
-## Deploy to QoreChain testnet
+## Deploy
 
-Fund a wallet with testnet QOR first.
+Three pieces: the **contract** on QoreChain, the **keyper** on Render (backend), the **web app** on Vercel.
+You need a wallet with testnet QOR for the deployer and another (or the same) for the keyper.
+
+### 1 · Contract → QoreChain testnet (from your machine)
 
 ```bash
-# 1. confirm real ML-DSA-87 signatures verify on 0x0a01
+cd contracts && forge build && cd ..
+
+# a) prove real ML-DSA-87 signatures verify on QoreChain's 0x0a01 precompile — must print
+#    realSignature: "valid", tamperedSignature: "invalid"
 RPC_URL=https://evm-testnet.qore.host pnpm council check-precompile
 
-# 2. deploy
+# b) deploy (writes contracts/deployments/9800.json → BlindspotMarkets + deployedAtBlock)
 cd contracts
 PRIVATE_KEY=0x... forge script script/Deploy.s.sol --rpc-url qorechain_testnet --broadcast --legacy
-cd ..                         # writes contracts/deployments/9800.json
+cd ..
+```
 
-# 3. council key (keep council.json offline)
-cp services/council/.env.example services/council/.env   # set COUNCIL_PASSPHRASE
-pnpm council keygen
+### 2 · Council key (offline, on your machine)
 
-# 4. create a market + run the keyper
-cp services/keyper/.env.example services/keyper/.env     # set PRIVATE_KEY, KEYPER_PASSPHRASE
-pnpm keyper create-market --question "Will BTC close above \$150k on Dec 31?" --close +3d --council services/council/council.json
-pnpm keyper run
+```bash
+cp services/council/.env.example services/council/.env    # set COUNCIL_PASSPHRASE
+pnpm council keygen                                        # → services/council/council.json
+node -p "require('./services/council/council.json').publicKey" > council.pub   # public half only
+```
 
-# 5. after close + reveals: resolve
-pnpm council resolve 1 yes      # or: sign offline, then `council relay resolution-1-yes.json`
+Keep `council.json` offline — signing needs no network (`pnpm council sign <id> yes`, then
+`pnpm council relay resolution-<id>-yes.json` from any machine).
+
+### 3 · Keyper → Render (backend)
+
+The keyper must run continuously and **keep its keys on a persistent disk** — a lost key means
+that market can only be refunded. `render.yaml` sets this up as a background worker with a 1 GB disk.
+
+1. Render → **New → Blueprint** → select this repo → it reads `render.yaml`.
+2. Fill the secret env vars: `BLINDSPOT_ADDRESS`, `FROM_BLOCK` (from `deployments/9800.json`),
+   `PRIVATE_KEY` (funded keyper wallet), `KEYPER_PASSPHRASE` (≥ 12 chars — store it safely).
+3. Deploy. Logs should show `keyper running`.
+4. Create markets **on the Render instance** (Shell tab) so their keys land on the disk:
+
+```bash
+pnpm keyper create-market --question "Will BTC close above \$150k on Dec 31?" \
+  --close +3d --reveal-window 1h --resolve-window 7d --council 0x<contents of council.pub>
+```
+
+(`pnpm keyper status` lists the markets this keyper holds keys for. If the Shell says `pnpm: not found`,
+run `corepack enable` first.)
+
+### 4 · Web app → Vercel (frontend)
+
+1. Vercel → **Add New Project** → import this repo → **Root Directory: `apps/web`** (framework: Next.js;
+   Vercel installs the pnpm workspace from the repo root automatically).
+2. Environment variables:
+
+| Name | Value |
+| --- | --- |
+| `NEXT_PUBLIC_CHAIN_ID` | `9800` |
+| `NEXT_PUBLIC_RPC_URL` | `https://evm-testnet.qore.host` |
+| `NEXT_PUBLIC_BLINDSPOT_ADDRESS` | `BlindspotMarkets` from `deployments/9800.json` |
+| `NEXT_PUBLIC_FROM_BLOCK` | `deployedAtBlock` from the same file |
+| `NEXT_PUBLIC_LOG_CHUNK` | `5000` (lower it if the RPC rejects large `eth_getLogs` ranges) |
+
+3. Deploy. Browser reads go through the app's own read-only `/api/rpc` proxy (no CORS issues);
+   transactions go from the user's wallet. Set `RPC_UPSTREAM` to point the proxy at a different RPC.
+
+### 5 · Resolve
+
+After a market closes the keyper releases its key and reveals every bet. Anyone can then propose the
+outcome in the app (bond, 2 h dispute window), or the council resolves directly:
+
+```bash
+pnpm council resolve 1 yes
 ```
 
 ## Trust model (read this)
