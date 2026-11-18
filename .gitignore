@@ -13,3 +13,5 @@ contracts/broadcast/*/31337/
 *.keystore.json
 services/keyper/keys/
 contracts/deployments/31337.json
+council.json
+resolution-*.json

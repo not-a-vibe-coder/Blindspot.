@@ -1,0 +1,25 @@
+{
+  "name": "@blindspot/council",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Blindspot post-quantum resolution council: ML-DSA-87 keys, offline outcome signing and relaying.",
+  "scripts": {
+    "council": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@blindspot/keyper": "workspace:*",
+    "@blindspot/sdk": "workspace:*",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "viem": "^2.58.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

@@ -23,5 +23,10 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
+  },
+  "exports": {
+    "./config": "./src/config.ts",
+    "./keystore": "./src/keystore.ts",
+    "./keyper": "./src/keyper.ts"
   }
 }
