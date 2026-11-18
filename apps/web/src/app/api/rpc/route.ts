@@ -6,7 +6,6 @@ import { NextResponse } from "next/server";
  * swapped (or keyed) server-side via RPC_UPSTREAM. Writes never pass through here —
  * transactions go from the user's wallet to its own RPC.
  */
-export const runtime = "edge";
 
 const UPSTREAM = process.env.RPC_UPSTREAM || process.env.NEXT_PUBLIC_RPC_URL || "https://evm-testnet.qore.host";
 
