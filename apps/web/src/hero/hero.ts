@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { computeLayout, toSlab, type HeroLayout } from "./layout";
+import { computeLayout, toSlab, type HeroLayout, type Rect } from "./layout";
 import { CELL_IDS, livePattern, type CellId, type Pt } from "./cuts";
-import { centroid, glassGeometry, type GlassDims, type V2 } from "./geometry";
+import { centroid, glassGeometry, printGeometry, type GlassDims, type V2 } from "./geometry";
 import { createGlassMaterial, createGlowUniforms, type GlowUniforms } from "./material";
+import { FONT, drawItems, navItems, panelItems, type Item } from "./content";
 
 export type PieceId = CellId | "nav";
 
@@ -11,7 +12,54 @@ export interface Piece {
   id: PieceId;
   group: THREE.Group;
   mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
+  print: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
   base: V2; // centroid in slab space
+}
+
+/** A page image (canvas → texture) that pieces print slices of. */
+class PrintSurface {
+  readonly canvas = document.createElement("canvas");
+  readonly ctx = this.canvas.getContext("2d")!;
+  readonly texture = new THREE.CanvasTexture(this.canvas);
+  readonly material: THREE.MeshBasicMaterial;
+  items: Item[] = [];
+
+  constructor(
+    public rect: Rect,
+    anisotropy: number,
+  ) {
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.anisotropy = anisotropy;
+    this.texture.generateMipmaps = true;
+    this.texture.minFilter = THREE.LinearMipmapLinearFilter;
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+    });
+  }
+
+  layout(rect: Rect, items: Item[]) {
+    this.rect = rect;
+    this.items = items;
+    const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1.5), 2.5);
+    this.canvas.width = Math.round(rect.w * dpr);
+    this.canvas.height = Math.round(rect.h * dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  draw(hover: ReadonlySet<string>) {
+    drawItems(this.ctx, this.items, this.rect.w, this.rect.h, hover);
+    this.texture.needsUpdate = true;
+  }
+
+  dispose() {
+    this.texture.dispose();
+    this.material.dispose();
+  }
 }
 
 export interface HeroOptions {
@@ -19,7 +67,8 @@ export interface HeroOptions {
 }
 
 /**
- * Blindspot landing hero — a dark page shattered into thick smoked-glass shards.
+ * Blindspot landing hero — a dark page shattered into thick smoked-glass shards,
+ * with the page content printed on the glass.
  * Camera: perspective fov 30°, placed so 1 world unit = 1 CSS px at z = 0.
  */
 export class GlassHero {
@@ -32,6 +81,9 @@ export class GlassHero {
   L!: HeroLayout;
   dims!: GlassDims;
   pieces: Piece[] = [];
+  panelSurface: PrintSurface;
+  navSurface: PrintSurface;
+  hover = new Set<string>();
 
   /** pointer in viewport px; `inside` false once it leaves the window */
   readonly pointer = { x: 0, y: 0, inside: false };
@@ -65,13 +117,26 @@ export class GlassHero {
     const key = new THREE.DirectionalLight(0xe2eaff, 1.15);
     key.position.set(-0.55, 0.85, 0.9).multiplyScalar(2000);
     this.scene.add(key);
-
     this.scene.add(this.slab);
+
+    const aniso = this.renderer.capabilities.getMaxAnisotropy();
+    this.panelSurface = new PrintSurface({ x: 0, y: 0, w: 1, h: 1 }, aniso);
+    this.navSurface = new PrintSurface({ x: 0, y: 0, w: 1, h: 1 }, aniso);
+
     window.addEventListener("pointermove", this.onPointerMove, { passive: true });
     window.addEventListener("pointerdown", this.onPointerMove, { passive: true });
     document.documentElement.addEventListener("pointerleave", this.onPointerLeave);
     window.addEventListener("blur", this.onPointerLeave);
+
     this.resize();
+    // reprint once Inter is ready (canvas text can't wait on CSS)
+    Promise.all([400, 450, 500, 550].map((w) => document.fonts.load(`${w} 32px ${FONT}`)))
+      .catch(() => {})
+      .then(() => {
+        if (this.disposed) return;
+        this.resize();
+        this.opts.onReady?.();
+      });
     this.raf = requestAnimationFrame(this.frame);
   }
 
@@ -82,7 +147,6 @@ export class GlassHero {
     const H = this.canvas.clientHeight || window.innerHeight;
     this.renderer.setSize(W, H, false);
     this.camera.aspect = W / H;
-    this.camera.fov = 30;
     this.camera.position.set(0, 0, H / 2 / Math.tan(THREE.MathUtils.degToRad(15)));
     this.camera.lookAt(0, 0, 0);
     this.camera.updateProjectionMatrix();
@@ -92,6 +156,11 @@ export class GlassHero {
     this.dims = { radius: 20 * S, depth: 13 * S, bevel: 2.6 * S, halfCut: this.L.cut / 2 };
     this.glow.uScale.value = S;
     this.slab.position.set(this.L.center.x, this.L.center.y, 0);
+
+    this.panelSurface.layout(this.L.panel, panelItems(this.L));
+    this.navSurface.layout(this.L.nav, navItems(this.L));
+    this.panelSurface.draw(this.hover);
+    this.navSurface.draw(this.hover);
     this.build();
   };
 
@@ -101,9 +170,14 @@ export class GlassHero {
     return toSlab(this.L, panel.x + p[0] * panel.w, panel.y + p[1] * panel.h);
   }
 
+  /** a print surface's rect in slab space (left, bottom, w, h) for UV mapping */
+  private pageOf(r: Rect) {
+    const [left, bottom] = toSlab(this.L, r.x, r.y + r.h);
+    return { left, bottom, w: r.w, h: r.h };
+  }
+
   private navOutline(): V2[] {
     const { nav } = this.L;
-    // nav is a single rounded slab; its outline is the full nav rect, inset like every piece
     const h = this.dims.halfCut;
     const [x0, y0] = toSlab(this.L, nav.x - h, nav.y - h);
     const [x1, y1] = toSlab(this.L, nav.x + nav.w + h, nav.y + nav.h + h);
@@ -125,10 +199,7 @@ export class GlassHero {
   private cellOutlines(): Record<CellId, V2[]> {
     const pattern = livePattern(this.time, this.pointerOnPanel(), this.presence, this.L.portrait);
     const out = {} as Record<CellId, V2[]>;
-    for (const id of CELL_IDS) {
-      // outer panel edges grow by half a cut so the inset leaves panel edges flush
-      out[id] = pattern[id].map((p) => this.expandEdge(this.panelToSlab(p), p));
-    }
+    for (const id of CELL_IDS) out[id] = pattern[id].map((p) => this.expandEdge(this.panelToSlab(p), p));
     return out;
   }
 
@@ -143,46 +214,61 @@ export class GlassHero {
     return [x, y];
   }
 
+  /** (Re)make a piece's glass + print geometry for an outline in slab space. */
+  private shapePiece(piece: Piece | null, id: PieceId, pts: V2[]): Piece {
+    const c = centroid(pts);
+    const local = pts.map(([x, y]) => [x - c[0], y - c[1]] as V2);
+    const surface = id === "nav" ? this.navSurface : this.panelSurface;
+    const glassGeo = glassGeometry(local, this.dims);
+    const printGeo = printGeometry(local, this.dims, c, this.pageOf(surface.rect));
+    glassGeo.computeBoundingBox();
+    const top = glassGeo.boundingBox!.max.z;
+
+    if (!piece) {
+      const group = new THREE.Group();
+      const mesh = new THREE.Mesh(glassGeo, createGlassMaterial(this.glow));
+      const print = new THREE.Mesh(printGeo, surface.material);
+      print.renderOrder = 1;
+      group.add(mesh, print);
+      this.slab.add(group);
+      piece = { id, group, mesh, print, base: c };
+    } else {
+      piece.mesh.geometry.dispose();
+      piece.print.geometry.dispose();
+      piece.mesh.geometry = glassGeo;
+      piece.print.geometry = printGeo;
+      piece.base = c;
+    }
+    piece.print.position.z = top + 0.3;
+    piece.group.position.x = c[0];
+    piece.group.position.y = c[1];
+    return piece;
+  }
+
   private build() {
     for (const p of this.pieces) {
       p.mesh.geometry.dispose();
       p.mesh.material.dispose();
+      p.print.geometry.dispose();
       this.slab.remove(p.group);
     }
-    this.pieces = [];
-
-    const outlines: [PieceId, V2[]][] = [["nav", this.navOutline()], ...Object.entries(this.cellOutlines())] as [
-      PieceId,
-      V2[],
-    ][];
-
-    for (const [id, pts] of outlines) {
-      const c = centroid(pts);
-      const local = pts.map(([x, y]) => [x - c[0], y - c[1]] as V2);
-      const material = createGlassMaterial(this.glow);
-      const mesh = new THREE.Mesh(glassGeometry(local, this.dims), material);
-      const group = new THREE.Group();
-      group.position.set(c[0], c[1], 0);
-      group.add(mesh);
-      this.slab.add(group);
-      this.pieces.push({ id, group, mesh, base: c });
-    }
+    this.pieces = [this.shapePiece(null, "nav", this.navOutline())];
+    const outlines = this.cellOutlines();
+    for (const id of CELL_IDS) this.pieces.push(this.shapePiece(null, id, outlines[id]));
   }
 
   /** Swap in fresh cell geometry for the current pattern (~45×/s). */
   private rebuildCells() {
     const outlines = this.cellOutlines();
-    for (const piece of this.pieces) {
-      if (piece.id === "nav") continue;
-      const pts = outlines[piece.id];
-      const c = centroid(pts);
-      const local = pts.map(([x, y]) => [x - c[0], y - c[1]] as V2);
-      piece.mesh.geometry.dispose();
-      piece.mesh.geometry = glassGeometry(local, this.dims);
-      piece.base = c;
-      piece.group.position.x = c[0];
-      piece.group.position.y = c[1];
-    }
+    for (const piece of this.pieces) if (piece.id !== "nav") this.shapePiece(piece, piece.id, outlines[piece.id]);
+  }
+
+  /** Reprint the page image when hover state on a printed control changes. */
+  setHover(key: string, on: boolean) {
+    if (on === this.hover.has(key)) return;
+    if (on) this.hover.add(key);
+    else this.hover.delete(key);
+    (key.startsWith("nav") ? this.navSurface : this.panelSurface).draw(this.hover);
   }
 
   // ───────────────────────────── input ─────────────────────────────
@@ -203,12 +289,12 @@ export class GlassHero {
     if (this.disposed) return;
     const dt = Math.min((now - (this.last || now)) / 1000, 1 / 20);
     this.last = now;
-    this.update(dt, now / 1000);
+    this.update(dt);
     this.renderer.render(this.scene, this.camera);
     this.raf = requestAnimationFrame(this.frame);
   };
 
-  protected update(dt: number, _t: number) {
+  protected update(dt: number) {
     this.time += dt;
     this.presence += ((this.pointer.inside ? 1 : 0) - this.presence) * (1 - Math.exp(-dt / 0.25));
 
@@ -229,7 +315,10 @@ export class GlassHero {
     for (const p of this.pieces) {
       p.mesh.geometry.dispose();
       p.mesh.material.dispose();
+      p.print.geometry.dispose();
     }
+    this.panelSurface.dispose();
+    this.navSurface.dispose();
     this.pmrem.dispose();
     this.renderer.dispose();
   }
