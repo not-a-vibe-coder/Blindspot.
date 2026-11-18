@@ -1,0 +1,21 @@
+{
+  "name": "@blindspot/devnet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "One-command local Blindspot chain: Anvil + contracts + seeded sealed markets + a running keyper.",
+  "scripts": {
+    "devnet": "tsx src/devnet.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@blindspot/keyper": "workspace:*",
+    "@blindspot/sdk": "workspace:*",
+    "viem": "^2.58.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
