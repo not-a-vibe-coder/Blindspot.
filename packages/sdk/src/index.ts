@@ -4,3 +4,4 @@ export * from "./types.js";
 export * from "./commitment.js";
 export * from "./seal.js";
 export * from "./council.js";
+export * from "./client.js";
