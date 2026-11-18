@@ -1,0 +1,357 @@
+@import "tailwindcss";
+
+/*
+ * Blindspot glass system.
+ * Every value here is lifted from the landing hero's WebGL material so DOM pages
+ * read as the same smoked glass: #17171b charcoal faces, thin bright rims, black gaps,
+ * a green/violet iridescent sheen on hover and a soft lavender glow under the cursor.
+ */
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-void: #050507;
+  --color-glass: #17171b;
+  --color-ink: #f4f4f6;
+  --color-yes: #36d67e;
+  --color-no: #b9abff;
+  --color-lavender: #b9abff;
+}
+
+:root {
+  --bg: #050507;
+  --glass: #17171b;
+  --gap: 14px;
+  --radius: 20px;
+  --ink-100: #ffffff;
+  --ink-80: rgba(255, 255, 255, 0.8);
+  --ink-60: rgba(255, 255, 255, 0.6);
+  --ink-55: rgba(255, 255, 255, 0.55);
+  --ink-38: rgba(255, 255, 255, 0.38);
+  --ink-34: rgba(255, 255, 255, 0.34);
+  --ink-12: rgba(255, 255, 255, 0.12);
+  --green: #36d67e;
+  --lavender: #b9abff;
+  --glow: 107, 94, 158; /* vec3(.42,.37,.62) */
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.25, 1.15);
+  --ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink-100);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(74, 134, 255, 0.45);
+}
+
+/* ───────────────────────── glass surface ───────────────────────── */
+
+.glass {
+  --mx: 50%;
+  --my: 50%;
+  --hover: 0;
+  --rx: 0deg;
+  --ry: 0deg;
+  --lift: 0px;
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(168deg, rgba(255, 255, 255, 0.075) 0%, rgba(255, 255, 255, 0) 32%),
+    radial-gradient(120% 90% at 10% 0%, rgba(205, 220, 255, 0.07), transparent 55%),
+    linear-gradient(180deg, #1b1b20 0%, #141418 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    /* specular top line */ inset 0 0 0 1px rgba(255, 255, 255, 0.055),
+    /* hairline rim */ 0 2px 0 #0c0c0f,
+    /* extrusion */ 0 3px 0 rgba(255, 255, 255, 0.035),
+    /* bevel catch */ 0 28px 60px -24px rgba(0, 0, 0, 0.9);
+  transform: perspective(1200px) translateZ(var(--lift)) rotateX(var(--rx)) rotateY(var(--ry));
+  transition:
+    transform 0.5s var(--ease-spring),
+    box-shadow 0.4s ease;
+  will-change: transform;
+}
+
+/* iridescent rim: green → violet, brightens on hover like iridescence .55 → 1.0 */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from calc(200deg + var(--hover) * 40deg) at var(--mx) var(--my),
+    rgba(255, 255, 255, 0.05),
+    rgba(120, 255, 190, 0.42),
+    rgba(255, 255, 255, 0.12),
+    rgba(175, 150, 255, 0.45),
+    rgba(255, 255, 255, 0.05)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: calc(0.28 + var(--hover) * 0.72);
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* lavender cursor glow: .16 · exp(-1.6·(d/300)²) */
+.glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    300px circle at var(--mx) var(--my),
+    rgba(var(--glow), calc(0.2 * var(--hover))),
+    rgba(var(--glow), calc(0.07 * var(--hover))) 45%,
+    transparent 75%
+  );
+  pointer-events: none;
+  z-index: 0;
+  transition: opacity 0.3s ease;
+}
+
+.glass > * {
+  position: relative;
+  z-index: 2;
+}
+
+.glass-flat {
+  transform: none !important;
+}
+
+/* thin dark sliver — the "← Back" shard material on DOM pages */
+.sliver {
+  border-radius: 10px;
+  background: linear-gradient(180deg, #18181d, #101013);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 2px 0 #09090b;
+}
+
+/* ───────────────────────── type ───────────────────────── */
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-38);
+}
+
+.headline {
+  font-weight: 500;
+  letter-spacing: -0.045em;
+  line-height: 0.97;
+  background: linear-gradient(180deg, #dcdce0 0%, #bdbdc3 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.title {
+  font-weight: 650;
+  letter-spacing: -0.022em;
+  color: var(--ink-100);
+}
+
+.muted {
+  color: var(--ink-55);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "zero";
+}
+
+/* ───────────────────────── controls ───────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 6px;
+  background: #ececf0;
+  color: #0a0a0c;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease,
+    transform 0.2s ease;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pill:hover:not(:disabled) {
+  background: var(--green);
+}
+
+.pill:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pill:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pill-ghost {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink-100);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.pill-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink-100);
+}
+
+.link {
+  color: var(--ink-80);
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1px;
+  transition: color 0.2s ease;
+}
+
+.link:hover {
+  color: var(--ink-100);
+  text-decoration-line: underline;
+}
+
+.nav-link {
+  color: var(--ink-60);
+  transition: color 0.2s ease;
+}
+
+.nav-link:hover,
+.nav-link[aria-current="page"] {
+  color: var(--ink-100);
+}
+
+.field {
+  height: 48px;
+  width: 100%;
+  border-radius: 10px;
+  padding: 0 14px;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.6),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  color: var(--ink-100);
+  font-size: 16px;
+  outline: none;
+  transition: box-shadow 0.2s ease;
+}
+
+.field:focus {
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.6),
+    inset 0 0 0 1px rgba(185, 171, 255, 0.55),
+    0 0 0 4px rgba(185, 171, 255, 0.1);
+}
+
+/* the frosted "sealed" chip that hides a side until reveal */
+.sealed-chip {
+  position: relative;
+  overflow: hidden;
+  border-radius: 6px;
+  background:
+    repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.05) 0 2px, transparent 2px 5px),
+    linear-gradient(180deg, #202026, #141418);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.sealed-chip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(185, 171, 255, 0.22) 45%, rgba(120, 255, 190, 0.16) 55%, transparent 80%);
+  transform: translateX(-100%);
+  animation: sheen 3.2s ease-in-out infinite;
+}
+
+@keyframes sheen {
+  0%,
+  55% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* a sealed chip shattering into its revealed side */
+@keyframes shatter-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.85) rotate(-4deg);
+    filter: blur(4px);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.06) rotate(1deg);
+    filter: blur(0);
+  }
+  100% {
+    transform: scale(1) rotate(0);
+  }
+}
+
+.reveal-in {
+  animation: shatter-in 0.6s var(--ease-out-back) both;
+}
+
+@keyframes fly-in {
+  from {
+    opacity: 0;
+    transform: perspective(1200px) translate3d(0, 30px, 120px) rotateX(18deg);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(1200px) translate3d(0, 0, 0) rotateX(0);
+  }
+}
+
+.fly-in {
+  animation: fly-in 0.72s var(--ease-out-back) both;
+}
+
+/* page backdrop: black with a faint studio wash + grain, like the hero's void */
+.void {
+  background:
+    radial-gradient(80% 60% at 20% -10%, rgba(170, 190, 255, 0.06), transparent 60%),
+    radial-gradient(60% 50% at 100% 0%, rgba(185, 171, 255, 0.04), transparent 60%),
+    var(--bg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass,
+  .fly-in,
+  .reveal-in,
+  .sealed-chip::after {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
