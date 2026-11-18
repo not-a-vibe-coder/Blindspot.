@@ -4,11 +4,32 @@ import { useEffect, useRef, useState } from "react";
 import { GlassHero, type HeroMode } from "./hero";
 import { TextLayer } from "./TextLayer";
 import { Definitions } from "./Definitions";
+import { StaticHero } from "./StaticHero";
 import { matrix3dFor } from "./homography";
 import type { Item } from "./content";
 import type { HeroLayout } from "./layout";
 
-export default function GlassHeroView() {
+function webglAvailable(): boolean {
+  try {
+    const c = document.createElement("canvas");
+    return !!(c.getContext("webgl2") || c.getContext("webgl"));
+  } catch {
+    return false;
+  }
+}
+
+/** Reduced motion or no WebGL → the static HTML page; otherwise the glass hero. */
+export default function Landing() {
+  const [glass, setGlass] = useState<boolean | null>(null);
+  useEffect(() => {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setGlass(!reduce && webglAvailable());
+  }, []);
+  if (glass === null) return <div className="fixed inset-0 bg-[#050507]" />;
+  return glass ? <GlassHeroView /> : <StaticHero />;
+}
+
+function GlassHeroView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLDivElement>(null);
@@ -16,10 +37,13 @@ export default function GlassHeroView() {
   const [layout, setLayout] = useState<{ panel: Item[]; nav: Item[]; L: HeroLayout } | null>(null);
   const [mode, setMode] = useState<HeroMode>("gone");
   const [terms, setTerms] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
-    const hero = new GlassHero(canvas, {
+    let hero: GlassHero;
+    try {
+      hero = new GlassHero(canvas, {
       onLayout: (panel, nav, L) => setLayout({ panel, nav, L }),
       onMode: setMode,
       onFrame: (h) => {
@@ -28,6 +52,10 @@ export default function GlassHeroView() {
         if (navRef.current) navRef.current.style.transform = matrix3dFor(L.nav.w, L.nav.h, h.surfaceQuad("nav"));
       },
     });
+    } catch {
+      setFailed(true); // context creation can still fail (blocklisted GPU, lost context)
+      return;
+    }
     heroRef.current = hero;
     if (process.env.NODE_ENV !== "production") (window as unknown as { __hero?: GlassHero }).__hero = hero;
     const onResize = () => hero.resize();
@@ -60,6 +88,7 @@ export default function GlassHeroView() {
     heroRef.current?.assemble();
   };
   const textHidden = mode !== "assembled";
+  if (failed) return <StaticHero />;
 
   return (
     <div className="hero-root fixed inset-0 overflow-hidden bg-[#050507]">
