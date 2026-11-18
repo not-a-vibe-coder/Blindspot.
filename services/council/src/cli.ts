@@ -15,6 +15,7 @@ Commands
   relay   <resolution.json>                submit a signed resolution (any funded wallet can relay)
   resolve <marketId> <yes|no|invalid>      sign + submit in one go
   status                                   every market: proposal, dispute, final outcome
+  check-precompile                         verify a real ML-DSA-87 signature on QoreChain 0x0a01
 
 Env: COUNCIL_KEY (default ./council.json), COUNCIL_PASSPHRASE, RPC_URL, PRIVATE_KEY,
      [BLINDSPOT_ADDRESS, CHAIN_ID, FROM_BLOCK]`;
@@ -89,6 +90,33 @@ async function main() {
       const s = sign(await client.chainId(), client.address, BigInt(a!), outcome);
       const tx = await client.resolveByCouncil(BigInt(s.marketId), outcome, s.councilPublicKey, s.signature);
       log("resolved", { marketId: a, outcome: Outcome[outcome], tx });
+      break;
+    }
+    case "check-precompile": {
+      // Proves noble's ML-DSA-87 signatures verify on QoreChain's 0x0a01 precompile
+      // before real money depends on it. Uses a throwaway key, needs only RPC_URL.
+      const { createPublicClient, http, encodeFunctionData, decodeFunctionResult, parseAbi } = await import("viem");
+      const { generateCouncilKeypair, QORE_PRECOMPILES } = await import("@blindspot/sdk");
+      const rpc = process.env.RPC_URL ?? "https://evm-testnet.qore.host";
+      const pc = createPublicClient({ transport: http(rpc) });
+      const abi = parseAbi(["function pqcVerify(bytes pubkey, bytes signature, bytes message) view returns (bool)"]);
+      const kp = generateCouncilKeypair();
+      const args = { chainId: await pc.getChainId(), contract: "0x0000000000000000000000000000000000000001" as Hex, marketId: 1n, outcome: Outcome.Yes };
+      const { resolutionMessage } = await import("@blindspot/sdk");
+      const msg = resolutionMessage(args);
+      const sig = signResolution(kp.secretKey, args);
+      const call = async (s: Hex) => {
+        const { data } = await pc.call({
+          to: QORE_PRECOMPILES.pqcVerify,
+          data: encodeFunctionData({ abi, functionName: "pqcVerify", args: [kp.publicKey, s, msg] }),
+        });
+        if (!data || data === "0x") return "inactive (empty return)";
+        return decodeFunctionResult({ abi, functionName: "pqcVerify", data }) ? "valid" : "invalid";
+      };
+      const good = await call(sig);
+      const tampered = await call(`${sig.slice(0, -2)}${sig.endsWith("00") ? "01" : "00"}` as Hex);
+      log("precompile check", { rpc, chainId: args.chainId, realSignature: good, tamperedSignature: tampered });
+      if (good !== "valid" || tampered !== "invalid") process.exitCode = 1;
       break;
     }
     case "status": {
