@@ -5,7 +5,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { randomBytes } from "@noble/hashes/utils.js";
 import { bytesToHex, hexToBytes, type Hex } from "viem";
-import { Side } from "./types.js";
+import { Side } from "./types.ts";
 
 /**
  * Sealed side format (1629 bytes, = BlindspotMarkets.MIN_SEALED_LEN):

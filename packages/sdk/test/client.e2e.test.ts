@@ -21,7 +21,7 @@ import {
   Outcome,
   resolutionMessage,
   Side,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 // End-to-end against a throwaway Anvil node with real ML-KEM-1024 sealing.
 // Anvil has no QoreChain precompiles, so MockPQCVerify is injected at 0x0a01.

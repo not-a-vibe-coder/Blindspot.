@@ -1,6 +1,6 @@
 import { ml_dsa87 } from "@noble/post-quantum/ml-dsa.js";
 import { bytesToHex, encodePacked, hexToBytes, type Hex } from "viem";
-import { Outcome } from "./types.js";
+import { Outcome } from "./types.ts";
 
 /** ML-DSA-87 sizes accepted by QoreChain's 0x0a01 precompile. */
 export const MLDSA87 = {

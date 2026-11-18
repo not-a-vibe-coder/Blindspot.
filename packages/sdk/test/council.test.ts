@@ -6,7 +6,7 @@ import {
   resolutionMessage,
   signResolution,
   verifyResolution,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 const args = {
   chainId: 31337,

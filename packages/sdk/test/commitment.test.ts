@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commitmentFor, randomSalt, Side } from "../src/index.js";
+import { commitmentFor, randomSalt, Side } from "../src/index.ts";
 
 // Vector produced by `cast call commitmentFor(...)` against BlindspotMarkets on Anvil (chain 31337).
 const CONTRACT = "0x5FbDB2315678afecb367f032d93F642f64180aa3";

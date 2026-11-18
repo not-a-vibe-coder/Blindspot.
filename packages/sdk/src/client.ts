@@ -7,10 +7,10 @@ import {
   type Transport,
   type WalletClient,
 } from "viem";
-import { blindspotMarketsAbi } from "./abi.js";
-import { commitmentFor, randomSalt } from "./commitment.js";
-import { sealSide, openSealedSide, type SealContext } from "./seal.js";
-import { Outcome, Side, type BetReceipt } from "./types.js";
+import { blindspotMarketsAbi } from "./abi.ts";
+import { commitmentFor, randomSalt } from "./commitment.ts";
+import { sealSide, openSealedSide, type SealContext } from "./seal.ts";
+import { Outcome, Side, type BetReceipt } from "./types.ts";
 
 export interface MarketInfo {
   marketId: bigint;

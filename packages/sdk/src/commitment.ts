@@ -1,6 +1,6 @@
 import { encodeAbiParameters, keccak256, toHex, type Hex } from "viem";
 import { randomBytes } from "@noble/hashes/utils.js";
-import { Side } from "./types.js";
+import { Side } from "./types.ts";
 
 /**
  * Same as `BlindspotMarkets.commitmentFor`:

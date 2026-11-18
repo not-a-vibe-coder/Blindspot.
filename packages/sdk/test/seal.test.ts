@@ -8,7 +8,7 @@ import {
   SEALED_SIDE_LENGTH,
   sealSide,
   Side,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 const ctx = { chainId: 9800, contract: "0x5FbDB2315678afecb367f032d93F642f64180aa3", marketId: 1n } as const;
 
