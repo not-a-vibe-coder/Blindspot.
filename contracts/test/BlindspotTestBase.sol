@@ -32,6 +32,7 @@ abstract contract BlindspotTestBase is Test {
         sealerPk = _bytes(1568, 0x11);
         sealerSk = _bytes(3168, 0x22);
         councilPk = _bytes(2592, 0x33);
+        sealedPayload = _bytes(bs.MIN_SEALED_LEN(), 0x44);
 
         closeTime = uint64(block.timestamp + 1 days);
         revealDeadline = closeTime + 1 hours;
@@ -52,6 +53,22 @@ abstract contract BlindspotTestBase is Test {
             keccak256(sealerSk),
             councilPk
         );
+    }
+
+    bytes sealedPayload; // dummy ML-KEM payload of the minimum valid length
+    uint256 nonce;
+
+    /// @dev Places a bet with a dummy sealed payload; returns (betId, salt).
+    ///      All helper calls happen BEFORE the prank so prank/expectRevert hit placeBet itself.
+    function _bet(uint256 marketId, address who, BlindspotMarkets.Side side, uint256 amount)
+        internal
+        returns (uint256 betId, bytes32 salt)
+    {
+        salt = keccak256(abi.encode(who, side, amount, ++nonce));
+        bytes32 c = bs.commitmentFor(marketId, who, side, salt);
+        bytes memory payload = sealedPayload;
+        vm.prank(who);
+        betId = bs.placeBet{value: amount}(marketId, c, payload);
     }
 
     function _bytes(uint256 len, bytes1 fill) internal pure returns (bytes memory b) {

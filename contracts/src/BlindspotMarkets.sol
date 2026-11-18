@@ -28,11 +28,39 @@ contract BlindspotMarkets {
         bytes32 councilKeyHash; // keccak256(ML-DSA-87 public key)
     }
 
+    enum Side {
+        Hidden, // still sealed (or never revealed)
+        Yes,
+        No
+    }
+
+    struct Bet {
+        address bettor;
+        uint128 amount;
+        bytes32 commitment; // keccak256(chainid, this, marketId, bettor, side, salt)
+        Side side;
+        bool claimed;
+    }
+
+    /// @dev What the world can see: how much is in, never which way — until reveal.
+    struct Pool {
+        uint128 totalStaked;
+        uint128 revealedYes;
+        uint128 revealedNo;
+        uint32 betCount;
+        uint32 revealedCount;
+    }
+
     // ──────────────────────────── Constants ───────────────────────────
 
     uint256 public constant MLKEM1024_PUBKEY_LEN = 1568;
     uint256 public constant MLKEM1024_SECRETKEY_LEN = 3168;
     uint256 public constant MLDSA87_PUBKEY_LEN = 2592;
+    uint256 public constant MLKEM1024_CIPHERTEXT_LEN = 1568;
+    /// @dev sealed side = ML-KEM ciphertext ‖ 12-byte nonce ‖ AES-256-GCM(side ‖ salt) ‖ 16-byte tag
+    uint256 public constant MIN_SEALED_LEN = MLKEM1024_CIPHERTEXT_LEN + 12 + 16 + 33;
+    uint256 public constant MAX_SEALED_LEN = 2048;
+    uint256 public constant MIN_BET = 0.001 ether;
 
     uint256 public constant MIN_REVEAL_WINDOW = 10 minutes;
     uint256 public constant MAX_FEE_BPS = 500; // 5%
@@ -46,6 +74,8 @@ contract BlindspotMarkets {
     uint256 public marketCount;
     mapping(uint256 => Market) internal _markets;
     mapping(uint256 => string) public question;
+    mapping(uint256 => Pool) internal _pools;
+    mapping(uint256 => mapping(uint256 => Bet)) internal _bets;
 
     // ───────────────────────────── Events ─────────────────────────────
 
@@ -59,6 +89,15 @@ contract BlindspotMarkets {
         bytes sealerPublicKey,
         bytes councilPublicKey
     );
+    /// @dev `sealedSide` lives only in the log — the contract never needs to read it.
+    event BetPlaced(
+        uint256 indexed marketId,
+        uint256 indexed betId,
+        address indexed bettor,
+        uint128 amount,
+        bytes32 commitment,
+        bytes sealedSide
+    );
     event FeeConfigUpdated(address treasury, uint16 feeBps);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -71,6 +110,11 @@ contract BlindspotMarkets {
     error InvalidKey();
     error EmptyQuestion();
     error UnknownMarket();
+    error BettingClosed();
+    error BetTooSmall();
+    error InvalidCommitment();
+    error InvalidSealedSide();
+    error UnknownBet();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -131,10 +175,59 @@ contract BlindspotMarkets {
         );
     }
 
+    // ──────────────────────────── Sealed bets ─────────────────────────
+
+    /// @notice Bet blind. The stake is public; the side is not.
+    /// @param commitment  {commitmentFor}(marketId, msg.sender, side, salt) — binds the side.
+    /// @param sealedSide  (side ‖ salt) encrypted to the market's ML-KEM-1024 sealer key, so the
+    ///                    sealer (or anyone, once the key is released) can reveal it after close.
+    function placeBet(uint256 marketId, bytes32 commitment, bytes calldata sealedSide)
+        external
+        payable
+        returns (uint256 betId)
+    {
+        Market storage m = _market(marketId);
+        if (block.timestamp >= m.closeTime) revert BettingClosed();
+        if (msg.value < MIN_BET) revert BetTooSmall();
+        if (commitment == bytes32(0)) revert InvalidCommitment();
+        if (sealedSide.length < MIN_SEALED_LEN || sealedSide.length > MAX_SEALED_LEN) {
+            revert InvalidSealedSide();
+        }
+
+        Pool storage p = _pools[marketId];
+        betId = ++p.betCount;
+        uint128 amount = uint128(msg.value);
+        p.totalStaked += amount;
+
+        _bets[marketId][betId] =
+            Bet({bettor: msg.sender, amount: amount, commitment: commitment, side: Side.Hidden, claimed: false});
+
+        emit BetPlaced(marketId, betId, msg.sender, amount, commitment, sealedSide);
+    }
+
+    /// @notice The commitment a bettor must submit. Domain-separated by chain + contract + market + bettor,
+    ///         so a commitment can't be replayed or copied by someone else.
+    function commitmentFor(uint256 marketId, address bettor, Side side, bytes32 salt)
+        public
+        view
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(block.chainid, address(this), marketId, bettor, side, salt));
+    }
+
     // ─────────────────────────────── Views ────────────────────────────
 
     function getMarket(uint256 marketId) external view returns (Market memory) {
         return _market(marketId);
+    }
+
+    function getPool(uint256 marketId) external view returns (Pool memory) {
+        _market(marketId);
+        return _pools[marketId];
+    }
+
+    function getBet(uint256 marketId, uint256 betId) external view returns (Bet memory) {
+        return _bet(marketId, betId);
     }
 
     // ─────────────────────────────── Admin ────────────────────────────
@@ -158,5 +251,10 @@ contract BlindspotMarkets {
     function _market(uint256 marketId) internal view returns (Market storage m) {
         m = _markets[marketId];
         if (m.creator == address(0)) revert UnknownMarket();
+    }
+
+    function _bet(uint256 marketId, uint256 betId) internal view returns (Bet storage b) {
+        b = _bets[marketId][betId];
+        if (b.bettor == address(0)) revert UnknownBet();
     }
 }
