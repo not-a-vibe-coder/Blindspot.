@@ -90,13 +90,18 @@ export class Keyper {
     return { marketId: id, status, revealed: pending.length, undecryptable };
   }
 
+  /** last tick, for health checks */
+  lastTick: { at: number; reports: MarketReport[]; error?: string } | null = null;
+
   /** Poll forever. */
   async run(intervalMs: number, signal?: AbortSignal): Promise<void> {
     while (!signal?.aborted) {
       try {
         const reports = await this.tick();
+        this.lastTick = { at: Date.now(), reports };
         for (const r of reports) if (r.status === "error") this.log("tick", { ...r });
       } catch (e) {
+        this.lastTick = { at: Date.now(), reports: this.lastTick?.reports ?? [], error: (e as Error).message };
         this.log("tick failed", { error: (e as Error).message });
       }
       await new Promise((r) => setTimeout(r, intervalMs));

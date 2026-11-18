@@ -13,5 +13,8 @@
     "devnet": "pnpm --filter @blindspot/devnet devnet",
     "keyper": "pnpm --filter @blindspot/keyper keyper",
     "council": "pnpm --filter @blindspot/council council"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

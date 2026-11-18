@@ -1,0 +1,39 @@
+# Render blueprint — the Blindspot keyper (backend).
+#
+# The keyper holds every market's ML-KEM-1024 sealer key (encrypted at rest) and must
+# keep running: after a market closes it releases the key and reveals every bet.
+# Keys live on a persistent disk — an ephemeral filesystem would lose them on restart,
+# and a market whose key is lost can only be refunded.
+#
+# New → Blueprint → pick this repo. Then set the secret env vars in the dashboard.
+services:
+  - type: worker
+    name: blindspot-keyper
+    runtime: node
+    plan: starter # workers + persistent disks need a paid instance
+    region: frankfurt
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --filter "@blindspot/keyper..."
+    startCommand: pnpm --filter @blindspot/keyper keyper run
+    disk:
+      name: keyper-keys
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: RPC_URL
+        value: https://evm-testnet.qore.host
+      - key: KEYS_DIR
+        value: /var/data/keys
+      - key: POLL_MS
+        value: "15000"
+      - key: LOG_CHUNK
+        value: "5000"
+      - key: BLINDSPOT_ADDRESS # from contracts/deployments/9800.json
+        sync: false
+      - key: FROM_BLOCK # deployedAtBlock from the same file
+        sync: false
+      - key: PRIVATE_KEY # funded keyper wallet (pays gas for key release + reveals)
+        sync: false
+      - key: KEYPER_PASSPHRASE # ≥ 12 chars, encrypts the keystore — keep a copy somewhere safe
+        sync: false

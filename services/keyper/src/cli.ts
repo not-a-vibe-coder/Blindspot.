@@ -1,5 +1,6 @@
 #!/usr/bin/env -S npx tsx
 import { existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { parseArgs } from "node:util";
 import type { Hex } from "viem";
 import { Keystore } from "./keystore.js";
@@ -67,10 +68,31 @@ async function main() {
       });
       break;
     }
-    case "run":
-      log("keyper running", { contract: client.address, chainId: await client.chainId(), pollMs: pollMs() });
+    case "run": {
+      const chainId = await client.chainId();
+      log("keyper running", { contract: client.address, chainId, pollMs: pollMs(), markets: (await keyper.markets()).length });
+      // optional health/status endpoint (Render web services and uptime monitors need a port)
+      if (process.env.PORT) {
+        const started = Date.now();
+        createServer((_req, res) => {
+          const t = keyper.lastTick;
+          const stale = !t || Date.now() - t.at > pollMs() * 4 + 30_000;
+          res.writeHead(stale && Date.now() - started > 60_000 ? 503 : 200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: !stale,
+              contract: client.address,
+              chainId,
+              lastTick: t ? new Date(t.at).toISOString() : null,
+              error: t?.error,
+              markets: t?.reports ?? [],
+            }),
+          );
+        }).listen(Number(process.env.PORT), () => log("health endpoint", { port: process.env.PORT }));
+      }
       await keyper.run(pollMs());
       break;
+    }
     case "tick":
       for (const r of await keyper.tick()) log("market", { ...r });
       break;
