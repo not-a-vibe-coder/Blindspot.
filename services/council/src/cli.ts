@@ -6,6 +6,13 @@ import { Outcome, signResolution, verifyResolution } from "@blindspot/sdk";
 import { loadClient } from "@blindspot/keyper/config";
 import { createCouncilKeyFile, readCouncilKeyFile, unlockCouncilKey } from "./councilKey.js";
 
+// load ./.env when present (Node ≥ 20.12); real env vars always win
+try {
+  if (existsSync(".env")) process.loadEnvFile(".env");
+} catch {
+  /* malformed .env — fall back to the process env */
+}
+
 const HELP = `blindspot-council — post-quantum (ML-DSA-87) resolution council
 
 Commands

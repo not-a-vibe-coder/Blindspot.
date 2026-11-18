@@ -2,10 +2,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { parseArgs } from "node:util";
+import { resolve } from "node:path";
 import type { Hex } from "viem";
 import { Keystore } from "./keystore.js";
 import { Keyper, createSealedMarket } from "./keyper.js";
 import { keysDir, loadClient, parseDuration, parseTime, passphrase, pollMs } from "./config.js";
+
+// load ./.env when present (Node ≥ 20.12); real env vars always win
+try {
+  if (existsSync(".env")) process.loadEnvFile(".env");
+} catch {
+  /* malformed .env — fall back to the process env */
+}
 
 const HELP = `blindspot-keyper — holds each market's ML-KEM-1024 key and reveals bets after close
 
@@ -23,7 +31,9 @@ const log = (msg: string, extra?: Record<string, unknown>) =>
 
 function councilKey(input: string): Hex {
   if (input.startsWith("0x")) return input as Hex;
-  if (existsSync(input)) return JSON.parse(readFileSync(input, "utf8")).publicKey as Hex;
+  // `pnpm keyper …` runs inside services/keyper; resolve paths from where the user typed it
+  const file = resolve(process.env.INIT_CWD ?? process.cwd(), input);
+  if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8")).publicKey as Hex;
   throw new Error("--council must be an ML-DSA-87 public key (0x…) or a council.json file");
 }
 
