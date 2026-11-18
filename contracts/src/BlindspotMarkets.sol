@@ -28,6 +28,7 @@ contract BlindspotMarkets {
         uint64 resolveDeadline; // no final outcome by this => Invalid (refunds)
         bytes32 sealerKeyHash; // keccak256(ML-KEM-1024 secret key)
         bytes32 councilKeyHash; // keccak256(ML-DSA-87 public key)
+        uint16 feeBps; // snapshotted at creation so admin changes never move live payouts
     }
 
     enum Side {
@@ -106,6 +107,7 @@ contract BlindspotMarkets {
     mapping(uint256 => bool) public sealerKeyReleased;
     mapping(uint256 => Resolution) internal _resolutions;
     mapping(uint256 => Proposal) internal _proposals;
+    mapping(uint256 => bool) public feesCollected;
     /// @notice Pull-payment balances (bond refunds and rewards).
     mapping(address => uint256) public credits;
 
@@ -136,6 +138,8 @@ contract BlindspotMarkets {
     event MarketResolved(uint256 indexed marketId, Outcome outcome, bool viaCouncil);
     event OutcomeProposed(uint256 indexed marketId, address indexed proposer, Outcome outcome, uint128 bond);
     event OutcomeDisputed(uint256 indexed marketId, address indexed disputer);
+    event Claimed(uint256 indexed marketId, uint256 indexed betId, address indexed bettor, uint256 payout, bool refund);
+    event FeesCollected(uint256 indexed marketId, uint256 amount);
     event CreditsWithdrawn(address indexed account, uint256 amount);
     event ProposalBondUpdated(uint128 bond);
     event FeeConfigUpdated(address treasury, uint16 feeBps);
@@ -175,6 +179,10 @@ contract BlindspotMarkets {
     error NothingToWithdraw();
     error TransferFailed();
     error Reentrancy();
+    error RevealsStillOpen();
+    error AlreadyClaimed();
+    error NotAWinner();
+    error NoFees();
 
     modifier nonReentrant() {
         if (_lock != 1) revert Reentrancy();
@@ -233,7 +241,8 @@ contract BlindspotMarkets {
             revealDeadline: revealDeadline,
             resolveDeadline: resolveDeadline,
             sealerKeyHash: sealerKeyHash,
-            councilKeyHash: keccak256(councilPublicKey)
+            councilKeyHash: keccak256(councilPublicKey),
+            feeBps: feeBps
         });
         question[marketId] = q;
 
@@ -423,6 +432,56 @@ contract BlindspotMarkets {
         return abi.encodePacked("BLINDSPOT_RESOLVE_V1", block.chainid, address(this), marketId, uint8(outcome));
     }
 
+    // ───────────────────────── Parimutuel payouts ──────────────────────
+
+    /// @notice Pay out a bet once reveals are over and the market is final. Anyone can trigger it
+    ///         (funds always go to the bettor), so a relayer can claim on behalf of users.
+    ///         If the market isn't final yet but can be settled, it's settled on the way.
+    ///
+    ///  - Winner:   stake × (pool − fee) / winningPool
+    ///  - Refund:   full stake if Invalid, if the sealer never released its key, or if nobody won
+    ///  - Unrevealed bets in a normal market are forfeited to winners: the key was public, so anyone
+    ///    could have revealed them — staying hidden can't be used as a free option.
+    function claim(uint256 marketId, uint256 betId) public nonReentrant returns (uint256 payout) {
+        Market storage m = _market(marketId);
+        if (block.timestamp < m.revealDeadline) revert RevealsStillOpen();
+        if (_resolutions[marketId].outcome == Outcome.Unresolved) settle(marketId);
+
+        Bet storage b = _bet(marketId, betId);
+        if (b.claimed) revert AlreadyClaimed();
+
+        bool refund;
+        (payout, refund) = _payout(marketId, m, b);
+        if (payout == 0) revert NotAWinner();
+
+        b.claimed = true;
+        _send(b.bettor, payout);
+        emit Claimed(marketId, betId, b.bettor, payout, refund);
+    }
+
+    /// @notice Send the market's protocol fee to the treasury's credits (once, normal markets only).
+    function collectFees(uint256 marketId) external {
+        Market storage m = _market(marketId);
+        if (block.timestamp < m.revealDeadline) revert RevealsStillOpen();
+        if (_resolutions[marketId].outcome == Outcome.Unresolved) settle(marketId);
+        if (feesCollected[marketId]) revert NoFees();
+        (, uint256 fee, bool refund) = _settlement(marketId, m);
+        if (refund || fee == 0) revert NoFees();
+        feesCollected[marketId] = true;
+        credits[treasury] += fee;
+        emit FeesCollected(marketId, fee);
+    }
+
+    /// @notice What `claim` would pay right now (0 if nothing / not yet claimable).
+    function previewPayout(uint256 marketId, uint256 betId) external view returns (uint256 payout, bool refund) {
+        Market storage m = _market(marketId);
+        if (block.timestamp < m.revealDeadline) return (0, false);
+        if (_effectiveOutcome(marketId, m) == Outcome.Unresolved) return (0, false);
+        Bet storage b = _bet(marketId, betId);
+        if (b.claimed) return (0, false);
+        return _payout(marketId, m, b);
+    }
+
     // ─────────────────────────────── Views ────────────────────────────
 
     function getResolution(uint256 marketId) external view returns (Resolution memory) {
@@ -485,6 +544,50 @@ contract BlindspotMarkets {
     function _finalize(uint256 marketId, Outcome outcome, bool viaCouncil) internal {
         _resolutions[marketId] = Resolution({outcome: outcome, viaCouncil: viaCouncil});
         emit MarketResolved(marketId, outcome, viaCouncil);
+    }
+
+    /// @dev The outcome a claim would see right now — stored, or what `settle` would produce.
+    function _effectiveOutcome(uint256 marketId, Market storage m) internal view returns (Outcome) {
+        Outcome stored = _resolutions[marketId].outcome;
+        if (stored != Outcome.Unresolved) return stored;
+        Proposal storage p = _proposals[marketId];
+        if (p.proposer != address(0) && p.disputer == address(0) && block.timestamp >= p.proposedAt + LIVENESS) {
+            return p.outcome;
+        }
+        if (block.timestamp >= m.resolveDeadline) return Outcome.Invalid;
+        return Outcome.Unresolved;
+    }
+
+    /// @return winningPool revealed stake on the winning side
+    /// @return fee         protocol fee, taken only from the losing + forfeited stake
+    /// @return refund      true if every bet should simply get its stake back
+    function _settlement(uint256 marketId, Market storage m)
+        internal
+        view
+        returns (uint256 winningPool, uint256 fee, bool refund)
+    {
+        Outcome o = _effectiveOutcome(marketId, m);
+        Pool storage p = _pools[marketId];
+        if (o == Outcome.Yes) winningPool = p.revealedYes;
+        else if (o == Outcome.No) winningPool = p.revealedNo;
+
+        refund = o == Outcome.Invalid || !sealerKeyReleased[marketId] || winningPool == 0;
+        if (!refund) fee = (uint256(p.totalStaked) - winningPool) * m.feeBps / 10_000;
+    }
+
+    function _payout(uint256 marketId, Market storage m, Bet storage b)
+        internal
+        view
+        returns (uint256 payout, bool refund)
+    {
+        uint256 winningPool;
+        uint256 fee;
+        (winningPool, fee, refund) = _settlement(marketId, m);
+        if (refund) return (b.amount, true);
+
+        Side winner = _effectiveOutcome(marketId, m) == Outcome.Yes ? Side.Yes : Side.No;
+        if (b.side != winner) return (0, false);
+        payout = uint256(b.amount) * (uint256(_pools[marketId].totalStaked) - fee) / winningPool;
     }
 
     /// @dev Disputed: whoever the council agrees with takes both bonds.
