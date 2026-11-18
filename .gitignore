@@ -11,5 +11,5 @@ contracts/broadcast/*/31337/
 
 # secrets
 *.keystore.json
-services/sealer/keys/
+services/keyper/keys/
 contracts/deployments/31337.json
