@@ -3,7 +3,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { computeLayout, toSlab, type HeroLayout, type Rect } from "./layout";
 import { CELL_IDS, livePattern, type CellId, type Pt } from "./cuts";
 import { centroid, glassGeometry, printGeometry, type GlassDims, type V2 } from "./geometry";
-import { createGlassMaterial, createGlowUniforms, type GlowUniforms } from "./material";
+import { createGlassMaterial, createGlowUniforms, GLASS, type GlowUniforms } from "./material";
 import { FONT, drawItems, navItems, panelItems, type Item } from "./content";
 import type { Quad } from "./homography";
 
@@ -15,6 +15,27 @@ export interface Piece {
   mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
   print: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
   base: V2; // centroid in slab space
+  /** hover spring state: lift (z) and tip (rx, ry) with velocities */
+  spring: { z: number; vz: number; rx: number; vrx: number; ry: number; vry: number };
+  /** where the pointer hits this piece, in its local frame, normalised to [-1, 1] */
+  tip: V2;
+  halfSize: V2;
+}
+
+/** k 170, c 19 — springy but settles in ~0.4 s */
+const SPRING_K = 170;
+const SPRING_C = 19;
+const TIP_MAX = 0.24;
+const deg = THREE.MathUtils.degToRad;
+
+function spring(x: number, v: number, target: number, dt: number): [number, number] {
+  // semi-implicit Euler in two substeps for stability at low frame rates
+  const h = dt / 2;
+  for (let i = 0; i < 2; i++) {
+    v += (SPRING_K * (target - x) - SPRING_C * v) * h;
+    x += v * h;
+  }
+  return [x, v];
 }
 
 /** A page image (canvas → texture) that pieces print slices of. */
@@ -89,11 +110,18 @@ export class GlassHero {
   panelSurface: PrintSurface;
   navSurface: PrintSurface;
   hover = new Set<string>();
+  /** false while shattered / flying */
+  interactive = true;
 
   /** pointer in viewport px; `inside` false once it leaves the window */
   readonly pointer = { x: 0, y: 0, inside: false };
   /** 0..1 fade of the cursor's influence (push, glow) */
   presence = 0;
+  /** smoothed slab tilt (radians) */
+  tilt = { x: deg(0.8), y: deg(-1.2) };
+  hovered: Piece | null = null;
+  private raycaster = new THREE.Raycaster();
+  private ndc = new THREE.Vector2();
   time = 0;
   private rebuildAcc = 0;
   static REBUILD_HZ = 45;
@@ -253,7 +281,16 @@ export class GlassHero {
       print.renderOrder = 1;
       group.add(mesh, print);
       this.slab.add(group);
-      piece = { id, group, mesh, print, base: c };
+      piece = {
+        id,
+        group,
+        mesh,
+        print,
+        base: c,
+        spring: { z: 0, vz: 0, rx: 0, vrx: 0, ry: 0, vry: 0 },
+        tip: [0, 0],
+        halfSize: [1, 1],
+      };
     } else {
       piece.mesh.geometry.dispose();
       piece.print.geometry.dispose();
@@ -262,6 +299,8 @@ export class GlassHero {
       piece.base = c;
     }
     piece.print.position.z = top + 0.3;
+    const bb = glassGeo.boundingBox!;
+    piece.halfSize = [(bb.max.x - bb.min.x) / 2 || 1, (bb.max.y - bb.min.y) / 2 || 1];
     piece.group.position.x = c[0];
     piece.group.position.y = c[1];
     return piece;
@@ -312,7 +351,6 @@ export class GlassHero {
     const dt = Math.min((now - (this.last || now)) / 1000, 1 / 20);
     this.last = now;
     this.update(dt);
-    this.scene.updateMatrixWorld();
     this.opts.onFrame?.(this);
     this.renderer.render(this.scene, this.camera);
     this.raf = requestAnimationFrame(this.frame);
@@ -326,6 +364,77 @@ export class GlassHero {
     if (this.rebuildAcc >= 1 / GlassHero.REBUILD_HZ) {
       this.rebuildAcc = 0;
       this.rebuildCells();
+    }
+
+    this.updateTilt(dt);
+    this.slab.updateMatrixWorld(true);
+    this.updateHover();
+    this.updatePieces(dt);
+  }
+
+  /**
+   * The block rotates as if pressed at the pointer:
+   *   rotateY = x·7° − 1.2°, rotateX = −y·5.5° + .8°   (x right, y up, in [-1, 1])
+   * smoothed with a 0.3 s exponential, easing back to rest when the pointer leaves.
+   */
+  private updateTilt(dt: number) {
+    const { W, H } = this.L;
+    const x = this.pointer.inside ? (this.pointer.x / W) * 2 - 1 : 0;
+    const y = this.pointer.inside ? -((this.pointer.y / H) * 2 - 1) : 0;
+    const k = 1 - Math.exp(-dt / 0.3);
+    this.tilt.y += (deg(x * 7 - 1.2) - this.tilt.y) * k;
+    this.tilt.x += (deg(-y * 5.5 + 0.8) - this.tilt.x) * k;
+    this.slab.rotation.set(this.tilt.x, this.tilt.y, 0);
+  }
+
+  /** Raycast the piece under the pointer and aim the cursor glow at the hit. */
+  private updateHover() {
+    let hit: THREE.Intersection | null = null;
+    if (this.pointer.inside && this.interactive) {
+      this.ndc.set((this.pointer.x / this.L.W) * 2 - 1, -(this.pointer.y / this.L.H) * 2 + 1);
+      this.raycaster.setFromCamera(this.ndc, this.camera);
+      const hits = this.raycaster.intersectObjects(
+        this.pieces.map((p) => p.mesh),
+        false,
+      );
+      hit = hits[0] ?? null;
+    }
+    this.hovered = hit ? (this.pieces.find((p) => p.mesh === hit!.object) ?? null) : null;
+
+    if (hit && this.hovered) {
+      const local = this.hovered.group.worldToLocal(hit.point.clone());
+      const [hx, hy] = this.hovered.halfSize;
+      this.hovered.tip = [THREE.MathUtils.clamp(local.x / hx, -1, 1), THREE.MathUtils.clamp(local.y / hy, -1, 1)];
+      this.glow.uPointer.value.copy(hit.point);
+    } else if (this.pointer.inside) {
+      // between shards: keep the glow on the slab plane under the pointer
+      this.ndc.set((this.pointer.x / this.L.W) * 2 - 1, -(this.pointer.y / this.L.H) * 2 + 1);
+      this.raycaster.setFromCamera(this.ndc, this.camera);
+      const n = new THREE.Vector3(0, 0, 1).applyQuaternion(this.slab.quaternion);
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, this.slab.position);
+      this.raycaster.ray.intersectPlane(plane, this.glow.uPointer.value);
+    }
+    this.glow.uGlow.value = this.presence * (this.interactive ? 1 : 0);
+  }
+
+  /** Hovered piece springs up toward the camera and tips; neighbours stay put. */
+  private updatePieces(dt: number) {
+    const S = this.L.S;
+    for (const p of this.pieces) {
+      const on = p === this.hovered;
+      const lift = p.id === "nav" ? 32 * S : 50 * S;
+      const s = p.spring;
+      [s.z, s.vz] = spring(s.z, s.vz, on ? lift : 0, dt);
+      [s.ry, s.vry] = spring(s.ry, s.vry, on ? p.tip[0] * TIP_MAX : 0, dt);
+      [s.rx, s.vrx] = spring(s.rx, s.vrx, on ? -p.tip[1] * TIP_MAX : 0, dt);
+
+      p.group.position.z = s.z;
+      p.group.rotation.set(s.rx, s.ry, 0);
+
+      // sheen: iridescence .55 → 1.0 and envMapIntensity 1 → 1.9 while hovered
+      const h = THREE.MathUtils.clamp(s.z / lift, 0, 1);
+      p.mesh.material.iridescence = GLASS.iridescence + (GLASS.iridescenceHover - GLASS.iridescence) * h;
+      p.mesh.material.envMapIntensity = GLASS.envMapIntensity + (GLASS.envMapIntensityHover - GLASS.envMapIntensity) * h;
     }
   }
 
