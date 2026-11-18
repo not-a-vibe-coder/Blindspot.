@@ -119,9 +119,19 @@ export function OraclePanel({ m, now, refresh }: Props) {
   const act = (label: string, fn: (w: NonNullable<typeof writer>) => Promise<unknown>) =>
     writer ? tx.run(label, () => fn(writer), refresh) : connect();
 
+  const keyLost = !m.keyReleased && now >= m.info.revealDeadline;
+
   return (
     <Glass className="p-6">
       <p className="eyebrow">Outcome</p>
+      {keyLost && (
+        <div className="mt-3">
+          <Notice>
+            The keyper never released this market’s key, so no side can be revealed: every stake is refunded once any outcome is
+            final. Proposing an outcome (or waiting for the resolve deadline) unlocks the refunds.
+          </Notice>
+        </div>
+      )}
       {!hasProposal && !expired && (
         <>
           <h3 className="title mt-3 text-[20px]">Nobody has called it yet.</h3>
