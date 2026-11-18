@@ -1,0 +1,20 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 500
+via_ir = true
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
+
+[rpc_endpoints]
+qorechain_testnet = "https://evm-testnet.qore.host"
+qorechain_mainnet = "https://evm.qore.host"
+local = "http://127.0.0.1:8545"
+
+[fmt]
+line_length = 110

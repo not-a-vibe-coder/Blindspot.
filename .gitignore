@@ -8,7 +8,6 @@ dist/
 contracts/out/
 contracts/cache/
 contracts/broadcast/*/31337/
-contracts/lib/
 
 # secrets
 *.keystore.json
