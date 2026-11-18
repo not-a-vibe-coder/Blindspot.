@@ -8,6 +8,7 @@ import { useWallet } from "./wallet";
 import { configured } from "./config";
 import { loadReceipts } from "./receipts";
 import type { MarketView } from "./market";
+import { cachedBets, cachedMarkets } from "./logCache";
 
 /** Poll an async loader; keeps the last good value across refreshes. */
 export function usePoll<T>(load: () => Promise<T>, deps: unknown[], ms = 5000) {
@@ -91,11 +92,9 @@ async function loadView(reader: ReturnType<typeof useWallet>["reader"], marketId
 
 export function useMarkets() {
   const { reader } = useWallet();
-  const infos = useRef(new Map<string, MarketView["info"]>());
   return usePoll(async () => {
     if (!configured) return [] as MarketView[];
-    const list = await reader.listMarkets();
-    for (const m of list) infos.current.set(m.marketId.toString(), m);
+    const list = await cachedMarkets(reader);
     const views = await Promise.all(list.map((m) => loadView(reader, m.marketId, m)));
     return views.sort((a, b) => Number(b.info.marketId - a.info.marketId));
   }, [reader], 8000);
@@ -110,10 +109,11 @@ export function useMarket(marketId: bigint) {
   const { reader } = useWallet();
   const info = useRef<MarketView["info"] | undefined>(undefined);
   return usePoll(async () => {
+    if (!info.current) info.current = (await cachedMarkets(reader)).find((m) => m.marketId === marketId);
     if (!configured) throw new Error("not configured");
     const view = await loadView(reader, marketId, info.current);
     info.current = view.info;
-    const sealed = await reader.getSealedBets(marketId, view.info.createdAtBlock);
+    const sealed = await cachedBets(reader, marketId, view.info.createdAtBlock);
     const r = reader.read();
     const bets: BetRow[] = await Promise.all(
       sealed.map(async (b) => {

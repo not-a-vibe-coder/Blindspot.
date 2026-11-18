@@ -13,6 +13,7 @@ import { downloadReceipt, importReceipts, receiptFor } from "@/lib/receipts";
 import { fmtAmount, sym } from "@/lib/format";
 import { phaseOf, type MarketView } from "@/lib/market";
 import { configured } from "@/lib/config";
+import { cachedBets } from "@/lib/logCache";
 
 interface MyBet {
   m: MarketView;
@@ -37,7 +38,7 @@ export default function PortfolioPage() {
       const r = reader.read();
       const lists = await Promise.all(
         markets.data.map(async (m) => {
-          const sealed = await reader.getSealedBets(m.info.marketId, m.info.createdAtBlock);
+          const sealed = await cachedBets(reader, m.info.marketId, m.info.createdAtBlock);
           const own = sealed.filter((b) => b.bettor.toLowerCase() === address.toLowerCase());
           return Promise.all(
             own.map(async (b) => {
