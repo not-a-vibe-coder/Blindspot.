@@ -25,6 +25,9 @@ export interface MarketReport {
  * are forfeited by the contract, so a bettor can't use a bogus payload as a free option.
  */
 export class Keyper {
+  /** per market: how many bets we already know can never be revealed (junk payloads) */
+  private junk = new Map<string, number>();
+
   constructor(
     private readonly client: BlindspotClient,
     private readonly keystore: Keystore,
@@ -63,6 +66,12 @@ export class Keyper {
       status = "released";
     }
 
+    // cheap exit: every bet is either revealed or known junk → no log scans needed
+    const pool = await this.client.read().pool(marketId);
+    if (status === "nothing-to-do" && pool.betCount - pool.revealedCount <= (this.junk.get(id) ?? 0)) {
+      return { marketId: id, status, revealed: 0, undecryptable: this.junk.get(id) ?? 0 };
+    }
+
     const [decrypted, alreadyRevealed] = await Promise.all([
       this.client.decryptAll(marketId, secretKey),
       this.client.getRevealedBetIds(marketId),
@@ -71,6 +80,7 @@ export class Keyper {
       .filter((d) => d.reveal && !alreadyRevealed.has(d.bet.betId))
       .map((d) => d.reveal!);
     const undecryptable = decrypted.filter((d) => d.error).length;
+    this.junk.set(id, undecryptable);
 
     if (pending.length > 0) {
       await this.client.revealBets(marketId, pending);

@@ -115,8 +115,9 @@ export class BlindspotClient {
     return { ...a, createdAtBlock: log.blockNumber };
   }
 
-  async listMarkets(): Promise<MarketInfo[]> {
-    const logs = await this.scan("MarketCreated");
+  /** All markets (or only those created from `fromBlock` on, for incremental scans). */
+  async listMarkets(fromBlock?: bigint): Promise<MarketInfo[]> {
+    const logs = await this.scan("MarketCreated", undefined, fromBlock);
     return logs.map((log) => ({ ...(log.args as Omit<MarketInfo, "createdAtBlock">), createdAtBlock: log.blockNumber }));
   }
 
@@ -139,6 +140,11 @@ export class BlindspotClient {
   async getRevealedBetIds(marketId: bigint, fromBlock?: bigint): Promise<Set<bigint>> {
     const logs = await this.scan("BetRevealed", { marketId }, fromBlock);
     return new Set(logs.map((l) => (l.args as { betId: bigint }).betId));
+  }
+
+  /** Latest block number, never cached (incremental scanners need the true head). */
+  async head(): Promise<bigint> {
+    return this.publicClient.getBlockNumber({ cacheTime: 0 });
   }
 
   /** Latest block timestamp — keepers act on chain time, not wall-clock time. */
