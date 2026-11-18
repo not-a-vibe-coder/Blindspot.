@@ -85,7 +85,7 @@ export class Keyper {
     while (!signal?.aborted) {
       try {
         const reports = await this.tick();
-        for (const r of reports) if (r.status !== "open" && r.status !== "expired") this.log("tick", { ...r });
+        for (const r of reports) if (r.status === "error") this.log("tick", { ...r });
       } catch (e) {
         this.log("tick failed", { error: (e as Error).message });
       }
