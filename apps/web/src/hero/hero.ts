@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { computeLayout, toSlab, type HeroLayout } from "./layout";
-import { CELL_IDS, cutPattern, type CellId, type Pt } from "./cuts";
+import { CELL_IDS, livePattern, type CellId, type Pt } from "./cuts";
 import { centroid, glassGeometry, type GlassDims, type V2 } from "./geometry";
 import { createGlassMaterial, createGlowUniforms, type GlowUniforms } from "./material";
 
@@ -33,6 +33,14 @@ export class GlassHero {
   dims!: GlassDims;
   pieces: Piece[] = [];
 
+  /** pointer in viewport px; `inside` false once it leaves the window */
+  readonly pointer = { x: 0, y: 0, inside: false };
+  /** 0..1 fade of the cursor's influence (push, glow) */
+  presence = 0;
+  time = 0;
+  private rebuildAcc = 0;
+  static REBUILD_HZ = 45;
+
   private raf = 0;
   private last = 0;
   private disposed = false;
@@ -59,6 +67,10 @@ export class GlassHero {
     this.scene.add(key);
 
     this.scene.add(this.slab);
+    window.addEventListener("pointermove", this.onPointerMove, { passive: true });
+    window.addEventListener("pointerdown", this.onPointerMove, { passive: true });
+    document.documentElement.addEventListener("pointerleave", this.onPointerLeave);
+    window.addEventListener("blur", this.onPointerLeave);
     this.resize();
     this.raf = requestAnimationFrame(this.frame);
   }
@@ -103,8 +115,15 @@ export class GlassHero {
     ];
   }
 
+  /** pointer in screen-panel coordinates (x right, y down), or null */
+  pointerOnPanel(): Pt | null {
+    if (!this.pointer.inside) return null;
+    const { panel } = this.L;
+    return [(this.pointer.x - panel.x) / panel.w, (this.pointer.y - panel.y) / panel.h];
+  }
+
   private cellOutlines(): Record<CellId, V2[]> {
-    const pattern = cutPattern(this.L.portrait);
+    const pattern = livePattern(this.time, this.pointerOnPanel(), this.presence, this.L.portrait);
     const out = {} as Record<CellId, V2[]>;
     for (const id of CELL_IDS) {
       // outer panel edges grow by half a cut so the inset leaves panel edges flush
@@ -150,6 +169,34 @@ export class GlassHero {
     }
   }
 
+  /** Swap in fresh cell geometry for the current pattern (~45×/s). */
+  private rebuildCells() {
+    const outlines = this.cellOutlines();
+    for (const piece of this.pieces) {
+      if (piece.id === "nav") continue;
+      const pts = outlines[piece.id];
+      const c = centroid(pts);
+      const local = pts.map(([x, y]) => [x - c[0], y - c[1]] as V2);
+      piece.mesh.geometry.dispose();
+      piece.mesh.geometry = glassGeometry(local, this.dims);
+      piece.base = c;
+      piece.group.position.x = c[0];
+      piece.group.position.y = c[1];
+    }
+  }
+
+  // ───────────────────────────── input ─────────────────────────────
+
+  private onPointerMove = (e: PointerEvent) => {
+    this.pointer.x = e.clientX;
+    this.pointer.y = e.clientY;
+    this.pointer.inside = true;
+  };
+
+  private onPointerLeave = () => {
+    this.pointer.inside = false;
+  };
+
   // ───────────────────────────── loop ─────────────────────────────
 
   private frame = (now: number) => {
@@ -161,11 +208,24 @@ export class GlassHero {
     this.raf = requestAnimationFrame(this.frame);
   };
 
-  protected update(_dt: number, _t: number) {}
+  protected update(dt: number, _t: number) {
+    this.time += dt;
+    this.presence += ((this.pointer.inside ? 1 : 0) - this.presence) * (1 - Math.exp(-dt / 0.25));
+
+    this.rebuildAcc += dt;
+    if (this.rebuildAcc >= 1 / GlassHero.REBUILD_HZ) {
+      this.rebuildAcc = 0;
+      this.rebuildCells();
+    }
+  }
 
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    window.removeEventListener("pointermove", this.onPointerMove);
+    window.removeEventListener("pointerdown", this.onPointerMove);
+    document.documentElement.removeEventListener("pointerleave", this.onPointerLeave);
+    window.removeEventListener("blur", this.onPointerLeave);
     for (const p of this.pieces) {
       p.mesh.geometry.dispose();
       p.mesh.material.dispose();
