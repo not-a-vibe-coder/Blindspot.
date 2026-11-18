@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {QorePQC} from "./libraries/QorePQC.sol";
+
 /// @title Blindspot — the blind prediction market
 /// @author Pascal Chukwu
 /// @notice Parimutuel YES/NO markets where every bet's side stays sealed until close.
@@ -42,6 +44,18 @@ contract BlindspotMarkets {
         bool claimed;
     }
 
+    enum Outcome {
+        Unresolved,
+        Yes,
+        No,
+        Invalid // refunds everyone
+    }
+
+    struct Resolution {
+        Outcome outcome; // final outcome once set
+        bool viaCouncil; // true if the ML-DSA-87 council signed it
+    }
+
     /// @dev What the world can see: how much is in, never which way — until reveal.
     struct Pool {
         uint128 totalStaked;
@@ -78,6 +92,7 @@ contract BlindspotMarkets {
     mapping(uint256 => mapping(uint256 => Bet)) internal _bets;
     /// @notice True once the sealer's ML-KEM secret key is public (keyper release).
     mapping(uint256 => bool) public sealerKeyReleased;
+    mapping(uint256 => Resolution) internal _resolutions;
 
     // ───────────────────────────── Events ─────────────────────────────
 
@@ -103,6 +118,7 @@ contract BlindspotMarkets {
     /// @dev Once emitted, anyone can decrypt every sealed side in this market and verify the reveals.
     event SealerKeyReleased(uint256 indexed marketId, bytes secretKey);
     event BetRevealed(uint256 indexed marketId, uint256 indexed betId, Side side);
+    event MarketResolved(uint256 indexed marketId, Outcome outcome, bool viaCouncil);
     event FeeConfigUpdated(address treasury, uint16 feeBps);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -125,6 +141,12 @@ contract BlindspotMarkets {
     error WrongSealerKey();
     error LengthMismatch();
     error InvalidReveal(uint256 betId);
+    error MarketStillOpen();
+    error AlreadyResolved();
+    error ResolutionExpired();
+    error InvalidOutcome();
+    error WrongCouncilKey();
+    error BadCouncilSignature();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -273,7 +295,40 @@ contract BlindspotMarkets {
         }
     }
 
+    // ──────────────────── Post-quantum council resolution ───────────────
+
+    /// @notice Finalize a market with an ML-DSA-87 signature from the market's council.
+    ///         Anyone can relay it — the signature is the authority, not msg.sender — and it's
+    ///         verified on-chain by QoreChain's PQC precompile (0x0a01), so it stays unforgeable
+    ///         even against a quantum adversary.
+    function resolveByCouncil(
+        uint256 marketId,
+        Outcome outcome,
+        bytes calldata councilPublicKey,
+        bytes calldata signature
+    ) external {
+        Market storage m = _market(marketId);
+        _requireResolvable(marketId, m);
+        if (outcome == Outcome.Unresolved) revert InvalidOutcome();
+        if (keccak256(councilPublicKey) != m.councilKeyHash) revert WrongCouncilKey();
+        if (!QorePQC.verify(councilPublicKey, signature, resolutionMessage(marketId, outcome))) {
+            revert BadCouncilSignature();
+        }
+        _finalize(marketId, outcome, true);
+    }
+
+    /// @notice Exact bytes the council signs. Domain-separated by chain, contract and market so a
+    ///         signature can never be replayed on another market or deployment.
+    function resolutionMessage(uint256 marketId, Outcome outcome) public view returns (bytes memory) {
+        return abi.encodePacked("BLINDSPOT_RESOLVE_V1", block.chainid, address(this), marketId, uint8(outcome));
+    }
+
     // ─────────────────────────────── Views ────────────────────────────
+
+    function getResolution(uint256 marketId) external view returns (Resolution memory) {
+        _market(marketId);
+        return _resolutions[marketId];
+    }
 
     function getMarket(uint256 marketId) external view returns (Market memory) {
         return _market(marketId);
@@ -309,6 +364,17 @@ contract BlindspotMarkets {
     function _market(uint256 marketId) internal view returns (Market storage m) {
         m = _markets[marketId];
         if (m.creator == address(0)) revert UnknownMarket();
+    }
+
+    function _requireResolvable(uint256 marketId, Market storage m) internal view {
+        if (block.timestamp < m.closeTime) revert MarketStillOpen();
+        if (_resolutions[marketId].outcome != Outcome.Unresolved) revert AlreadyResolved();
+        if (block.timestamp >= m.resolveDeadline) revert ResolutionExpired();
+    }
+
+    function _finalize(uint256 marketId, Outcome outcome, bool viaCouncil) internal {
+        _resolutions[marketId] = Resolution({outcome: outcome, viaCouncil: viaCouncil});
+        emit MarketResolved(marketId, outcome, viaCouncil);
     }
 
     function _requireRevealWindow(Market storage m) internal view {
