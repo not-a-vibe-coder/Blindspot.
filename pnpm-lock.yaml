@@ -16,6 +16,9 @@ importers:
       '@fontsource-variable/inter':
         specifier: ^5.3.0
         version: 5.3.0
+      '@qorechain/sdk':
+        specifier: 0.14.0
+        version: 0.14.0(viem@2.58.0(typescript@7.0.2))
       next:
         specifier: ^16.4.6
         version: 16.4.6(@types/node@26.6.6)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -2100,7 +2103,7 @@ snapshots:
       '@cosmjs/proto-signing': 0.39.0
       '@cosmjs/stargate': 0.39.0
       '@cosmjs/tendermint-rpc': 0.39.0
-      '@noble/curves': 1.9.1
+      '@noble/curves': 1.9.7
       '@noble/hashes': 1.8.0
       '@qorechain/evm': 0.14.0(viem@2.58.0(typescript@7.0.2))
       '@qorechain/pqc': 0.2.3

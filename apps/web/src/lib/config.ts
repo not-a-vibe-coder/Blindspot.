@@ -42,7 +42,7 @@ export const configured = /^0x[0-9a-fA-F]{40}$/.test(config.address);
 const useProxy = (process.env.NEXT_PUBLIC_RPC_PROXY ?? (CHAIN_ID === 31337 ? "0" : "1")) === "1";
 
 /** URL the app reads through: our own /api/rpc proxy in the browser, else the chain RPC. */
-function readUrl(): string {
+export function readUrl(): string {
   if (useProxy && typeof window !== "undefined") return `${window.location.origin}/api/rpc`;
   return rpc;
 }

@@ -3,8 +3,9 @@ import { NextResponse } from "next/server";
 /**
  * Read-only JSON-RPC proxy to the chain's RPC. The browser talks to /api/rpc on our own
  * origin, so public RPCs without CORS headers still work, and the upstream URL can be
- * swapped (or keyed) server-side via RPC_UPSTREAM. Writes never pass through here —
- * transactions go from the user's wallet to its own RPC.
+ * swapped (or keyed) server-side via RPC_UPSTREAM. Nothing is signed here: injected wallets
+ * send through their own RPC, and in-browser Blindspot accounts relay already-signed raw
+ * transactions (eth_sendRawTransaction).
  */
 
 const UPSTREAM = process.env.RPC_UPSTREAM || process.env.NEXT_PUBLIC_RPC_URL || "https://evm-testnet.qore.host";
@@ -26,6 +27,8 @@ const ALLOWED = new Set([
   "eth_gasPrice",
   "eth_maxPriorityFeePerGas",
   "eth_feeHistory",
+  // signed transactions from in-browser Blindspot accounts (already signed; we only relay)
+  "eth_sendRawTransaction",
 ]);
 
 type Req = { jsonrpc: "2.0"; id: number | string | null; method: string; params?: unknown[] };
