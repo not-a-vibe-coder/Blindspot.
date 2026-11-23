@@ -32,6 +32,11 @@ export class Keyper {
     private readonly client: BlindspotClient,
     private readonly keystore: Keystore,
     private readonly log: Logger = () => {},
+    /**
+     * Called right before every on-chain write. On QoreChain this makes sure the keyper's
+     * EVM authorisation window is open (see @blindspot/account ensureWindow).
+     */
+    private readonly beforeWrite: () => Promise<void> = async () => {},
   ) {}
 
   async markets(): Promise<StoredKey[]> {
@@ -60,6 +65,7 @@ export class Keyper {
     let status: MarketReport["status"] = "nothing-to-do";
 
     if (!(await this.client.read().keyReleased(marketId))) {
+      await this.beforeWrite();
       await this.client.releaseSealerKey(marketId, secretKey);
       this.keystore.markReleased(key.secretKeyHash);
       this.log("released sealer key", { marketId: id });
@@ -83,6 +89,7 @@ export class Keyper {
     this.junk.set(id, undecryptable);
 
     if (pending.length > 0) {
+      await this.beforeWrite();
       await this.client.revealBets(marketId, pending);
       this.log("revealed bets", { marketId: id, count: pending.length, undecryptable });
       status = "revealed";

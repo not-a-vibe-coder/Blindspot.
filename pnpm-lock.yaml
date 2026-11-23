@@ -162,6 +162,9 @@ importers:
 
   services/keyper:
     dependencies:
+      '@blindspot/account':
+        specifier: workspace:*
+        version: link:../account
       '@blindspot/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk

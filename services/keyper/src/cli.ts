@@ -7,6 +7,7 @@ import type { Hex } from "viem";
 import { Keystore } from "./keystore.js";
 import { Keyper, createSealedMarket } from "./keyper.js";
 import { keysDir, loadClient, parseDuration, parseTime, passphrase, pollMs } from "./config.js";
+import { accountFromEnv, ensureWindow, networkFromEnv } from "@blindspot/account";
 
 // load ./.env when present (Node ≥ 20.12); real env vars always win
 try {
@@ -37,6 +38,36 @@ function councilKey(input: string): Hex {
   throw new Error("--council must be an ML-DSA-87 public key (0x…) or a council.json file");
 }
 
+/**
+ * QoreChain admits EVM writes only inside an EVM authorisation window opened with the
+ * account's post-quantum key. Before each write, keep one open (opening a new one when it
+ * is missing or nearly used up). Not needed on a local devnet.
+ */
+async function windowGuard(chainId: number): Promise<() => Promise<void>> {
+  if (chainId !== 9800 && chainId !== 9801) return async () => {};
+  if (!process.env.PQC_RECOVERY_CODE) {
+    log("WARNING: PQC_RECOVERY_CODE not set — QoreChain will refuse the keyper's transactions", {});
+    return async () => {};
+  }
+  const net = networkFromEnv();
+  const acct = accountFromEnv();
+  const params = {
+    blocks: Number(process.env.KEYPER_WINDOW_BLOCKS ?? 17_280),
+    maxTxs: Number(process.env.KEYPER_WINDOW_TXS ?? 1_000),
+    maxValueQor: Number(process.env.KEYPER_WINDOW_QOR ?? 50),
+    minBlocks: 300,
+    minTxs: 5,
+    minValueQor: 2,
+  };
+  return async () => {
+    const r = await ensureWindow(net, acct, params);
+    if (r.opened) {
+      log("opened EVM window", { tx: r.txHash, blocks: params.blocks, txs: params.maxTxs, qor: params.maxValueQor });
+      await new Promise((res) => setTimeout(res, 3000)); // next block, so the window (and nonce) are live
+    }
+  };
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { values } = parseArgs({
@@ -54,11 +85,13 @@ async function main() {
 
   const client = await loadClient();
   const keystore = new Keystore(keysDir(), passphrase());
-  const keyper = new Keyper(client, keystore, log);
+  const beforeWrite = await windowGuard(await client.chainId());
+  const keyper = new Keyper(client, keystore, log, beforeWrite);
 
   switch (cmd) {
     case "create-market": {
       if (!values.question || !values.close || !values.council) throw new Error("need --question, --close, --council");
+      await beforeWrite();
       const now = await client.chainTime();
       const closeTime = parseTime(values.close, now);
       const revealDeadline = closeTime + parseDuration(values["reveal-window"]!);

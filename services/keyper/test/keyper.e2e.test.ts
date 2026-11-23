@@ -20,7 +20,10 @@ describe.skipIf(!anvilAvailable)("Keyper e2e (anvil)", () => {
     const client = (wc = operator) => new BlindspotClient({ address: env.address, publicClient: env.publicClient, walletClient: wc! });
     const keystore = new Keystore(mkdtempSync(join(tmpdir(), "keyper-e2e-")), "e2e passphrase, not for prod");
     const logs: string[] = [];
-    const keyper = new Keyper(client(), keystore, (m) => logs.push(m));
+    let windowChecks = 0;
+    const keyper = new Keyper(client(), keystore, (m) => logs.push(m), async () => {
+      windowChecks++;
+    });
 
     const now = await client().chainTime();
     const { marketId } = await createSealedMarket(client(), keystore, {
@@ -58,6 +61,7 @@ describe.skipIf(!anvilAvailable)("Keyper e2e (anvil)", () => {
     await env.warpTo(now + 3600n);
     const [report] = await keyper.tick();
     expect(report).toMatchObject({ status: "revealed", revealed: 2, undecryptable: 1 });
+    expect(windowChecks).toBe(2); // once before the key release, once before the reveal batch
     expect(await client().read().keyReleased(marketId)).toBe(true);
 
     const pool = await client().read().pool(marketId);
@@ -69,6 +73,7 @@ describe.skipIf(!anvilAvailable)("Keyper e2e (anvil)", () => {
 
     // idempotent: a second tick has nothing to do
     expect((await keyper.tick())[0]).toMatchObject({ status: "nothing-to-do", revealed: 0 });
+    expect(windowChecks).toBe(2); // idle ticks never touch the window
 
     // after the reveal deadline the keyper stops touching the market
     await env.warpTo(now + 7200n);

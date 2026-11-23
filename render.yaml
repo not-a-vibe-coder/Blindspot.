@@ -12,7 +12,7 @@ services:
     runtime: node
     plan: starter # workers + persistent disks need a paid instance
     region: frankfurt
-    buildCommand: corepack enable && pnpm install --frozen-lockfile --filter "@blindspot/keyper..."
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --filter "@blindspot/keyper..." --filter "@blindspot/account..."
     startCommand: pnpm --filter @blindspot/keyper keyper run
     disk:
       name: keyper-keys
@@ -37,3 +37,7 @@ services:
         sync: false
       - key: KEYPER_PASSPHRASE # ≥ 12 chars, encrypts the keystore — keep a copy somewhere safe
         sync: false
+      - key: PQC_RECOVERY_CODE # QRC1-… from `pnpm account init` for PRIVATE_KEY (QoreChain EVM windows)
+        sync: false
+      - key: KEYPER_WINDOW_QOR # cap on fees per window, in QOR
+        value: "50"
