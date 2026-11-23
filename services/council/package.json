@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@blindspot/account": "workspace:*",
     "@blindspot/keyper": "workspace:*",
     "@blindspot/sdk": "workspace:*",
     "@noble/ciphers": "^2.4.0",

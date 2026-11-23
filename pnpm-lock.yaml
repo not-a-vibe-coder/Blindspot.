@@ -131,6 +131,9 @@ importers:
 
   services/council:
     dependencies:
+      '@blindspot/account':
+        specifier: workspace:*
+        version: link:../account
       '@blindspot/keyper':
         specifier: workspace:*
         version: link:../keyper

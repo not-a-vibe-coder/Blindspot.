@@ -5,6 +5,17 @@ import type { Hex } from "viem";
 import { Outcome, signResolution, verifyResolution } from "@blindspot/sdk";
 import { loadClient } from "@blindspot/keyper/config";
 import { createCouncilKeyFile, readCouncilKeyFile, unlockCouncilKey } from "./councilKey.js";
+import { accountFromEnv, ensureWindow, networkFromEnv } from "@blindspot/account";
+
+/** On QoreChain, a relayer needs an open EVM window to submit the resolution. */
+async function ensureRelayWindow(chainId: number) {
+  if (chainId !== 9800 && chainId !== 9801) return;
+  if (!process.env.PQC_RECOVERY_CODE) {
+    throw new Error("PQC_RECOVERY_CODE not set — QoreChain needs it to open an EVM window for this relayer (see `pnpm account init`)");
+  }
+  const r = await ensureWindow(networkFromEnv(), accountFromEnv(), { blocks: 600, maxTxs: 3, maxValueQor: 5, minTxs: 1, minBlocks: 30, minValueQor: 0.5 });
+  if (r.opened) await new Promise((res) => setTimeout(res, 3000));
+}
 
 // load ./.env when present (Node ≥ 20.12); real env vars always win
 try {
@@ -87,6 +98,7 @@ async function main() {
       const client = await loadClient();
       if (s.chainId !== (await client.chainId())) throw new Error("signed for a different chain");
       if (s.contract.toLowerCase() !== client.address.toLowerCase()) throw new Error("signed for a different contract");
+      await ensureRelayWindow(s.chainId);
       const tx = await client.resolveByCouncil(BigInt(s.marketId), s.outcome, s.councilPublicKey, s.signature);
       log("resolved", { marketId: s.marketId, outcome: Outcome[s.outcome], tx });
       break;
@@ -95,6 +107,7 @@ async function main() {
       const client = await loadClient();
       const outcome = parseOutcome(b);
       const s = sign(await client.chainId(), client.address, BigInt(a!), outcome);
+      await ensureRelayWindow(s.chainId);
       const tx = await client.resolveByCouncil(BigInt(s.marketId), outcome, s.councilPublicKey, s.signature);
       log("resolved", { marketId: a, outcome: Outcome[outcome], tx });
       break;
