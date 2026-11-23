@@ -10,11 +10,15 @@ import { useTx } from "@/lib/useTx";
 import { downloadReceipt, saveReceipt } from "@/lib/receipts";
 import { fmtAmount, sym } from "@/lib/format";
 import { publicClient } from "@/lib/config";
+import { QuantumAccountSetup, useQuantumState } from "@/components/QuantumAccount";
 
 const PRESETS = ["0.1", "0.5", "1", "5"];
 
 export function BetPanel({ marketId, onPlaced }: { marketId: bigint; onPlaced: () => void }) {
-  const { writer, address, connect, wrongChain, switchChain } = useWallet();
+  const { writer, address, connect, wrongChain, switchChain, kind, quantum } = useWallet();
+  const q = useQuantumState();
+  // on QoreChain a Blindspot account must be funded, activated and have an open session
+  const needsQuantumSetup = quantum.supported && (kind === null || (kind === "quantum" && !q.ready));
   const [side, setSide] = useState<Side.Yes | Side.No | null>(null);
   const [amount, setAmount] = useState("0.5");
   const [balance, setBalance] = useState<bigint | null>(null);
@@ -151,7 +155,16 @@ export function BetPanel({ marketId, onPlaced }: { marketId: bigint; onPlaced: (
       </p>
 
       <div className="mt-5">
-        {!address ? (
+        {needsQuantumSetup ? (
+          <div className="rounded-[14px] p-4 shadow-[inset_0_0_0_1px_rgba(185,171,255,0.22)]">
+            <QuantumAccountSetup />
+            {kind === null && (
+              <button type="button" className="mt-3 w-full text-center text-[12px] text-white/40 hover:text-white" onClick={() => void connect()}>
+                or connect a browser wallet
+              </button>
+            )}
+          </div>
+        ) : !address ? (
           <button type="button" className="pill w-full" onClick={() => void connect()}>
             Connect wallet
           </button>

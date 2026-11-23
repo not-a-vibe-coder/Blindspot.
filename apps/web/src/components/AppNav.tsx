@@ -8,6 +8,7 @@ import { Glass } from "./Glass";
 import { useWallet } from "@/lib/wallet";
 import { shortAddr } from "@/lib/format";
 import { chain } from "@/lib/config";
+import { QuantumAccountSetup } from "./QuantumAccount";
 
 const LINKS = [
   { href: "/markets", label: "Markets" },
@@ -19,7 +20,7 @@ const LINKS = [
 export function AppNav() {
   const path = usePathname();
   return (
-    <Glass as="nav" className="flex h-[72px] items-center justify-between px-5 sm:px-7">
+    <Glass as="nav" className="relative z-40 flex h-[72px] items-center justify-between px-5 sm:px-7">
       <Link href="/" className="flex items-center gap-3 text-[17px] font-[550] tracking-[-0.02em]">
         <BrandMark size={26} />
         Blindspot
@@ -47,7 +48,7 @@ export function AppNav() {
 }
 
 export function ConnectButton() {
-  const { address, wallets, connect, disconnect, connecting, wrongChain, switchChain, error } = useWallet();
+  const { address, wallets, connect, disconnect, connecting, wrongChain, switchChain, error, quantum, kind } = useWallet();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -72,7 +73,7 @@ export function ConnectButton() {
       <button
         type="button"
         className="flex items-center gap-2 text-[14px] font-medium text-white transition-colors hover:text-[#b9abff]"
-        onClick={() => (address ? setOpen((o) => !o) : wallets.length > 1 ? setOpen((o) => !o) : void connect())}
+        onClick={() => (address || quantum.supported || wallets.length > 1 ? setOpen((o) => !o) : void connect())}
         disabled={connecting}
       >
         {address ? (
@@ -88,8 +89,16 @@ export function ConnectButton() {
       </button>
 
       {open && (
-        <Glass className="fly-in absolute right-0 top-[calc(100%+18px)] z-50 w-64 p-2" style={{ borderRadius: 14 }}>
-          {address ? (
+        <Glass className={`fly-in absolute right-0 top-[calc(100%+18px)] z-50 p-2 ${quantum.supported ? "w-[340px]" : "w-64"}`} style={{ borderRadius: 14 }}>
+          {kind === "quantum" ? (
+            <div className="p-3">
+              <p className="eyebrow mb-4">Blindspot account · post-quantum</p>
+              <QuantumAccountSetup />
+              <button type="button" className="pill pill-ghost mt-4 h-9 w-full text-[13px]" onClick={() => (disconnect(), setOpen(false))}>
+                Disconnect
+              </button>
+            </div>
+          ) : address ? (
             <div className="p-2">
               <p className="eyebrow">Connected</p>
               <p className="mono mt-2 break-all text-[12px] text-white/80">{address}</p>
@@ -100,7 +109,20 @@ export function ConnectButton() {
             </div>
           ) : (
             <div className="flex flex-col">
-              <p className="eyebrow px-2 pb-2 pt-1">Choose a wallet</p>
+              {quantum.supported && (
+                <div className="mb-2 rounded-[10px] p-3 shadow-[inset_0_0_0_1px_rgba(185,171,255,0.25)]">
+                  {quantum.secret ? (
+                    <button type="button" className="w-full text-left" onClick={() => (quantum.use(), setOpen(true))}>
+                      <p className="text-[14px] font-medium text-white">Use my Blindspot account</p>
+                      <p className="mono mt-1 text-[11px] text-white/45">{quantum.secret.evm.slice(0, 10)}…{quantum.secret.evm.slice(-4)}</p>
+                    </button>
+                  ) : (
+                    <QuantumAccountSetup compact />
+                  )}
+                  <p className="mt-2 text-[10px] leading-snug text-[#b9abff]/80">Recommended on QoreChain — signs with ML-DSA-87 in your browser.</p>
+                </div>
+              )}
+              <p className="eyebrow px-2 pb-2 pt-1">{quantum.supported ? "Or a browser wallet (needs its own QoreChain EVM window)" : "Choose a wallet"}</p>
               {wallets.map((w) => (
                 <button
                   key={w.uuid}

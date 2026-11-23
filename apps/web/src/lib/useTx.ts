@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { errMsg } from "./format";
+import { explainWindowError, quantumSupported } from "./quantum";
 
 /** Run one wallet action at a time with pending / error / done state. */
 export function useTx() {
@@ -19,7 +20,8 @@ export function useTx() {
       await after?.();
       return out;
     } catch (e) {
-      setError(errMsg(e));
+      const hint = quantumSupported ? await explainWindowError(e).catch(() => null) : null;
+      setError(hint ?? errMsg(e));
       return undefined;
     } finally {
       setPending(null);

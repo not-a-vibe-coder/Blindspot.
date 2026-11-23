@@ -1,9 +1,11 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { createWalletClient, custom, numberToHex, type Account, type Chain, type EIP1193Provider, type Hex, type Transport, type WalletClient } from "viem";
+import { createWalletClient, custom, http, numberToHex, type Account, type Chain, type EIP1193Provider, type Hex, type Transport, type WalletClient } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { BlindspotClient } from "@blindspot/sdk";
-import { chain, config, publicClient } from "./config";
+import { chain, config, publicClient, readUrl } from "./config";
+import { createSecret, forgetSecret, loadSecret, quantumSupported, type QuantumSecret } from "./quantum";
 
 /** EIP-6963 announced wallet. */
 export interface WalletInfo {
@@ -15,6 +17,15 @@ export interface WalletInfo {
 }
 
 interface WalletState {
+  /** "quantum" = the in-browser post-quantum Blindspot account; "injected" = MetaMask & co. */
+  kind: "quantum" | "injected" | null;
+  quantum: {
+    supported: boolean;
+    secret: QuantumSecret | null;
+    create: () => Promise<void>;
+    use: () => void;
+    forget: () => void;
+  };
   wallets: WalletInfo[];
   address: Hex | null;
   chainId: number | null;
@@ -42,6 +53,22 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [chainId, setChainId] = useState<number | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [secret, setSecret] = useState<QuantumSecret | null>(null);
+  const [useQuantum, setUseQuantum] = useState(false);
+
+  // the in-browser Blindspot account (QoreChain only)
+  useEffect(() => {
+    if (!quantumSupported) return;
+    const load = () => {
+      const s = loadSecret();
+      setSecret(s);
+      if (!s) setUseQuantum(false);
+    };
+    load();
+    if (localStorage.getItem(LAST) === "quantum" && loadSecret()) setUseQuantum(true);
+    window.addEventListener("blindspot:quantum", load);
+    return () => window.removeEventListener("blindspot:quantum", load);
+  }, []);
 
   // discover wallets (EIP-6963), falling back to window.ethereum
   useEffect(() => {
@@ -172,16 +199,54 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setActive(null);
     setAddress(null);
     setChainId(null);
+    setUseQuantum(false);
   }, []);
+
+  const quantum = useMemo(
+    () => ({
+      supported: quantumSupported,
+      secret,
+      create: async () => {
+        const s = await createSecret();
+        setSecret(s);
+        localStorage.setItem(LAST, "quantum");
+        setActive(null);
+        setUseQuantum(true);
+      },
+      use: () => {
+        if (!loadSecret()) return;
+        localStorage.setItem(LAST, "quantum");
+        setActive(null);
+        setUseQuantum(true);
+      },
+      forget: () => {
+        forgetSecret();
+        localStorage.removeItem(LAST);
+        setUseQuantum(false);
+      },
+    }),
+    [secret],
+  );
 
   const reader = useMemo(
     () => new BlindspotClient({ address: config.address, publicClient: publicClient(), fromBlock: config.fromBlock, logChunk: config.logChunk }),
     [],
   );
 
-  const wrongChain = !!address && chainId !== null && chainId !== chain.id;
+  const kind: WalletState["kind"] = useQuantum && secret ? "quantum" : active && address ? "injected" : null;
+  const effectiveAddress = kind === "quantum" ? secret!.evm : address;
+  const wrongChain = kind === "injected" && chainId !== null && chainId !== chain.id;
 
   const writer = useMemo(() => {
+    if (kind === "quantum" && secret) {
+      // signs locally; raw transactions are relayed through our /api/rpc proxy
+      const walletClient = createWalletClient({
+        chain,
+        transport: http(readUrl()),
+        account: privateKeyToAccount(secret.privateKey),
+      }) as unknown as WC;
+      return new BlindspotClient({ address: config.address, publicClient: publicClient(), walletClient, fromBlock: config.fromBlock, logChunk: config.logChunk });
+    }
     if (!active || !address || wrongChain) return null;
     const walletClient = createWalletClient({ chain, transport: custom(active.provider), account: address }) as unknown as WC;
     return new BlindspotClient({
@@ -191,9 +256,26 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       fromBlock: config.fromBlock,
       logChunk: config.logChunk,
     });
-  }, [active, address, wrongChain]);
+  }, [kind, secret, active, address, wrongChain]);
 
-  const value: WalletState = { wallets, address, chainId, wrongChain, connecting, error, connect, disconnect, switchChain, reader, writer };
+  const value: WalletState = {
+    kind,
+    quantum,
+    wallets,
+    address: effectiveAddress,
+    chainId: kind === "quantum" ? chain.id : chainId,
+    wrongChain,
+    connecting,
+    error,
+    connect: async (w?: WalletInfo) => {
+      setUseQuantum(false);
+      await connect(w);
+    },
+    disconnect,
+    switchChain,
+    reader,
+    writer,
+  };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
