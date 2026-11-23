@@ -82,6 +82,26 @@ pnpm devnet warp 1h          # reveal window over → winners can claim
 Three pieces: the **contract** on QoreChain, the **keyper** on Render (backend), the **web app** on Vercel.
 You need a wallet with testnet QOR for the deployer and another (or the same) for the keyper.
 
+### 0 · QoreChain accounts: post-quantum key + EVM window (read first)
+
+Since chain v3.2.0, QoreChain admits an EVM transaction **only** from an account that has a
+registered **ML-DSA-87 key** and an open **EVM authorisation window**, opened by a hybrid
+(secp256k1 + ML-DSA-87) Cosmos-lane transaction. Every operator account (deployer, keyper,
+council relayer) sets this up once with `pnpm account`:
+
+```bash
+cd services/account && cp .env.example .env     # PRIVATE_KEY=0x…  (e.g. from `cast wallet new`)
+cd ../.. && pnpm account init                   # prints qor1… address + a QRC1-… recovery code
+#   → put PQC_RECOVERY_CODE=QRC1-… in services/account/.env, keep a safe copy
+#   → claim test QOR at https://dashboard.qorechain.io/faucet with the qor1… address
+pnpm account setup --blocks 3000 --txs 15 --value 20   # register the key + open a window
+pnpm account status
+```
+
+The keyper opens and renews its own windows (it needs `PQC_RECOVERY_CODE` too); the council
+CLI opens a small one before relaying. Bettors use a **Blindspot account** created in the web
+app, which walks them through the same steps (create → fund → activate → open a session).
+
 ### 1 · Contract → QoreChain testnet (from your machine)
 
 ```bash
@@ -91,7 +111,8 @@ cd contracts && forge build && cd ..
 #    realSignature: "valid", tamperedSignature: "invalid"
 RPC_URL=https://evm-testnet.qore.host pnpm council check-precompile
 
-# b) deploy (writes contracts/deployments/9800.json → BlindspotMarkets + deployedAtBlock)
+# b) with the deployer's window open (step 0), deploy
+#    (writes contracts/deployments/9800.json → BlindspotMarkets + deployedAtBlock)
 cd contracts
 PRIVATE_KEY=0x... forge script script/Deploy.s.sol --rpc-url qorechain_testnet --broadcast --legacy
 cd ..
@@ -115,7 +136,9 @@ that market can only be refunded. `render.yaml` sets this up as a background wor
 
 1. Render → **New → Blueprint** → select this repo → it reads `render.yaml`.
 2. Fill the secret env vars: `BLINDSPOT_ADDRESS`, `FROM_BLOCK` (from `deployments/9800.json`),
-   `PRIVATE_KEY` (funded keyper wallet), `KEYPER_PASSPHRASE` (≥ 12 chars — store it safely).
+   `PRIVATE_KEY` (funded keyper wallet), `KEYPER_PASSPHRASE` (≥ 12 chars — store it safely),
+   `PQC_RECOVERY_CODE` (from `pnpm account init` for that key — register it with
+   `pnpm account register` once; the keyper opens its own windows after that).
 3. Deploy. Logs should show `keyper running`.
 4. Create markets **on the Render instance** (Shell tab) so their keys land on the disk:
 
@@ -141,8 +164,9 @@ run `corepack enable` first.)
 | `NEXT_PUBLIC_FROM_BLOCK` | `deployedAtBlock` from the same file |
 | `NEXT_PUBLIC_LOG_CHUNK` | `5000` (lower it if the RPC rejects large `eth_getLogs` ranges) |
 
-3. Deploy. Browser reads go through the app's own read-only `/api/rpc` proxy (no CORS issues);
-   transactions go from the user's wallet. Set `RPC_UPSTREAM` to point the proxy at a different RPC.
+3. Deploy. Browser reads go through the app's own `/api/rpc` and `/api/qore` proxies (no CORS
+   issues); nothing is signed server-side. Optional: `RPC_UPSTREAM` / `QORE_REST_UPSTREAM` to
+   point the proxies at other endpoints.
 
 ### 5 · Resolve
 
