@@ -12,7 +12,8 @@
     "typecheck": "pnpm -r typecheck",
     "devnet": "pnpm --filter @blindspot/devnet devnet",
     "keyper": "pnpm --filter @blindspot/keyper keyper",
-    "council": "pnpm --filter @blindspot/council council"
+    "council": "pnpm --filter @blindspot/council council",
+    "account": "pnpm --filter @blindspot/account account"
   },
   "engines": {
     "node": ">=22"
